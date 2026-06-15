@@ -2,7 +2,18 @@
 
 import type { Message } from '@/types';
 
-const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:4000/chat';
+function resolveSocketUrl(): string {
+  const configured = process.env.NEXT_PUBLIC_SOCKET_URL?.trim();
+  if (configured) {
+    const normalized = configured.replace(/\/$/, '');
+    return normalized.endsWith('/chat') ? normalized : `${normalized}/chat`;
+  }
+
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
+  return `${apiUrl.replace(/\/api\/v1\/?$/, '')}/chat`;
+}
+
+const SOCKET_URL = resolveSocketUrl();
 
 function isMessage(value: unknown): value is Message {
   if (!value || typeof value !== 'object') return false;
