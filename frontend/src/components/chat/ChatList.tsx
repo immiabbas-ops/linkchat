@@ -65,7 +65,7 @@ function ChatListItem({
               <h3
                 className={cn(
                   'truncate text-[17px] text-[var(--text-primary)]',
-                  unread > 0 ? 'font-semibold' : 'font-normal',
+                  unread > 0 ? 'font-semibold md:font-normal' : 'font-normal',
                 )}
               >
                 {chat.title}
@@ -76,14 +76,16 @@ function ChatListItem({
                 <span
                   className={cn(
                     'text-[12px]',
-                    unread > 0 ? 'font-medium text-[var(--accent-dark)]' : 'text-[var(--text-secondary)]',
+                    unread > 0
+                      ? 'font-medium text-[var(--accent-dark)] md:font-normal md:text-[var(--text-secondary)]'
+                      : 'text-[var(--text-secondary)]',
                   )}
                 >
                   {formatMessageTime(chat.lastMessage.createdAt)}
                 </span>
               )}
               {unread > 0 && (
-                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">
+                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white md:hidden">
                   {unread > 99 ? '99+' : unread}
                 </span>
               )}
@@ -95,7 +97,7 @@ function ChatListItem({
               presence
                 ? 'font-medium text-[var(--accent-dark)]'
                 : unread > 0
-                  ? 'font-medium text-[var(--text-primary)]'
+                  ? 'font-medium text-[var(--text-primary)] md:font-normal md:text-[var(--text-secondary)]'
                   : 'text-[var(--text-secondary)]',
             )}
           >

@@ -87,7 +87,6 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
     ensureChatInList,
     fetchChat,
     upsertChat,
-    removeChatFromList,
     sendMessage,
   } = useChatStore();
 
@@ -424,9 +423,10 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
         chatId={chatId}
         open={showContactInfo}
         onClose={() => setShowContactInfo(false)}
-        onContactRemoved={() => {
-          removeChatFromList(chatId);
-          router.push('/chats');
+        onContactRemoved={async () => {
+          await fetchChats();
+          const stillVisible = useChatStore.getState().chats.some((c) => c.id === chatId);
+          if (!stillVisible) router.push('/chats');
         }}
         onContactUpdated={async () => {
           await fetchChats();

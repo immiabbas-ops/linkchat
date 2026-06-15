@@ -75,7 +75,11 @@ export class ChatsService {
     const visibleItems = items.filter((chat) => {
       if (chat.type !== 'PRIVATE' || chat.telegramBridge) return true;
       const other = chat.members.find((m) => m.userId !== userId);
-      return !!other && !!contactMap[other.userId];
+      if (!other) return false;
+      // Saved contacts always appear in the list.
+      if (contactMap[other.userId]) return true;
+      // Non-contacts appear once there is conversation activity (e.g. they messaged you).
+      return !!(chat.messages?.[0] || (unreadByChat[chat.id] || 0) > 0);
     });
 
     return {

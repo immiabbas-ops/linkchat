@@ -54,7 +54,7 @@ interface ChatState {
 
   sendMessage: (chatId: string, content: string, options?: Partial<Message>) => Promise<void>;
 
-  addMessage: (message: Message) => void;
+  addMessage: (message: Message) => Promise<void>;
 
   updateMessage: (message: Message) => void;
 
@@ -354,7 +354,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
 
 
-  addMessage: (message) => {
+  addMessage: async (message) => {
 
     const userId = useAuthStore.getState().user?.id;
 
@@ -362,7 +362,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     if (!get().chats.some((c) => c.id === normalized.chatId)) {
 
-      void get().ensureChatInList(normalized.chatId);
+      await get().ensureChatInList(normalized.chatId);
 
     }
 
@@ -725,7 +725,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     socketUnsubs = [
 
-      socketService.on('message:new', (data) => get().addMessage(data as Message)),
+      socketService.on('message:new', (data) => {
+        void get().addMessage(data as Message);
+      }),
 
       socketService.on('message:edit', (data) => {
 

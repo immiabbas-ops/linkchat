@@ -12,11 +12,16 @@ const navItems = [
   { href: '/discover', label: 'Discover', icon: Compass },
 ];
 
-function UnreadBadge({ count }: { count: number }) {
+function UnreadBadge({ count, desktop = false }: { count: number; desktop?: boolean }) {
   if (count <= 0) return null;
 
   return (
-    <span className="absolute -right-3 -top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-bold leading-none text-white">
+    <span
+      className={cn(
+        'absolute -right-3 -top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-bold leading-none text-white',
+        desktop && 'md:hidden',
+      )}
+    >
       {count > 99 ? '99+' : count}
     </span>
   );
@@ -113,7 +118,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   )}
                 >
                   <Icon className="h-5 w-5" />
-                  <UnreadBadge count={badgeCount} />
+                  <UnreadBadge count={badgeCount} desktop />
                 </Link>
               );
             })}
