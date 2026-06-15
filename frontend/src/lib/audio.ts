@@ -1,3 +1,5 @@
+import { resolveMediaUrl as resolvePublicMediaUrl } from '@/lib/media-url';
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
 
 const RECORDING_MIME_TYPES = [
@@ -46,8 +48,9 @@ export function mimeFromUrl(url: string): string {
 
 export function resolveMediaUrl(url?: string | null): string | null {
   if (!url) return null;
-  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:')) {
-    return url;
+  if (url.startsWith('blob:')) return url;
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    return resolvePublicMediaUrl(url) || null;
   }
   const origin = API_BASE.replace(/\/api\/v1\/?$/, '');
   return url.startsWith('/') ? `${origin}${url}` : `${API_BASE}/${url}`;

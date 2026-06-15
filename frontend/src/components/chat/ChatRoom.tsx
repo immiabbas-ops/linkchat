@@ -107,7 +107,7 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
     () =>
       chatMessages
         .filter((m) => m.type === 'IMAGE' && m.mediaFiles?.[0]?.url)
-        .map((m) => m.mediaFiles![0].url),
+        .map((m) => resolveMediaUrl(m.mediaFiles![0].url)),
     [chatMessages],
   );
 

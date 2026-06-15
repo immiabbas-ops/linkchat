@@ -11,6 +11,7 @@ import { Avatar } from '@/components/ui/Avatar';
 import { VoiceMessagePlayer } from './VoiceMessagePlayer';
 import { LinkPreview } from './LinkPreview';
 import { getVoiceMessageUrl } from '@/lib/audio';
+import { resolveMediaUrl } from '@/lib/media-url';
 import type { Message } from '@/types';
 
 interface MessageBubbleProps {
@@ -57,11 +58,12 @@ export function MessageBubble({
   const { user } = useAuthStore();
   const isOwn = isOwnMessage(message, user?.id);
   const voiceUrl = getVoiceMessageUrl(message);
+  const fileUrl = resolveMediaUrl(message.mediaFiles?.[0]?.url);
   const isVoice = message.type === 'VOICE' && !!voiceUrl;
   const isDoc = message.type === 'DOCUMENT' || message.type === 'FILE';
   const isScanned = !!message.metadata?.scanned;
   const isSigned = !!message.metadata?.signed;
-  const docImageUrl = message.mediaFiles?.[0]?.url;
+  const docImageUrl = fileUrl;
   const docIsImage =
     isDoc &&
     !!docImageUrl &&
@@ -182,8 +184,8 @@ export function MessageBubble({
           />
         ) : message.type === 'IMAGE' && message.mediaFiles?.[0] ? (
           <div>
-            <button type="button" onClick={() => onImageClick?.(message.mediaFiles![0].url)} className="block">
-              <img src={message.mediaFiles[0].url} alt="Shared" className="max-h-64 rounded-md object-cover" />
+            <button type="button" onClick={() => onImageClick?.(fileUrl)} className="block">
+              <img src={fileUrl} alt="Shared" className="max-h-64 rounded-md object-cover" />
             </button>
             {message.content && message.content !== message.mediaFiles[0].fileName && (
               <p className="mt-1 whitespace-pre-wrap text-[14px]">{message.content}</p>
@@ -222,7 +224,7 @@ export function MessageBubble({
           </div>
         ) : isDoc ? (
           <a
-            href={message.mediaFiles?.[0]?.url || '#'}
+            href={fileUrl || '#'}
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
