@@ -2,7 +2,7 @@ const URL_REGEX = /https?:\/\/[^\s<]+[^\s<.,;:!?'")\]}]/gi;
 
 export function extractUrls(text?: string | null): string[] {
   if (!text) return [];
-  return [...new Set(text.match(URL_REGEX) || [])];
+  return Array.from(new Set(text.match(URL_REGEX) || []));
 }
 
 export function linkPreviewLabel(url: string): { host: string; path: string } {

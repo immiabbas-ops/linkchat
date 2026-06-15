@@ -63,7 +63,7 @@ export function NewGroupSheet({ open, onClose, onCreate }: NewGroupSheetProps) {
     setSaving(true);
     setError('');
     try {
-      await onCreate(name.trim(), [...selected]);
+      await onCreate(name.trim(), Array.from(selected));
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create group');

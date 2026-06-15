@@ -54,7 +54,7 @@ export function RestaurantDetail({
   const [activeMenuCategory, setActiveMenuCategory] = useState<string | null>(null);
 
   const menuCategories = useMemo(() => {
-    const cats = [...new Set(place.menu.map((m) => m.category))];
+    const cats = Array.from(new Set(place.menu.map((m) => m.category)));
     return cats;
   }, [place.menu]);
 
