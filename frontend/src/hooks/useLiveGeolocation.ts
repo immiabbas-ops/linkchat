@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { geolocationErrorMessage, isSecureBrowserContext } from '@/lib/permissions';
 
 export interface LiveCoords {
   lat: number;
@@ -24,6 +25,12 @@ export function useLiveGeolocation(enabled = true) {
       return;
     }
 
+    if (!isSecureBrowserContext()) {
+      setError(geolocationErrorMessage(0, false));
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
@@ -39,11 +46,7 @@ export function useLiveGeolocation(enabled = true) {
         setLoading(false);
       },
       (err) => {
-        setError(
-          err.code === 1
-            ? 'Allow location access to use the map and set pickup.'
-            : 'Could not detect your location.',
-        );
+        setError(geolocationErrorMessage(err.code));
         setLoading(false);
       },
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 },

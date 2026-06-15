@@ -10,6 +10,7 @@ import {
   combineDocumentPages,
   enhanceDocumentImage,
 } from '@/lib/document-utils';
+import { cameraErrorMessage, isSecureBrowserContext } from '@/lib/permissions';
 import { useAuthStore } from '@/store/auth-store';
 
 interface DocumentScannerProps {
@@ -45,6 +46,10 @@ export function DocumentScanner({ open, onClose, onSend }: DocumentScannerProps)
   const startCamera = useCallback(async () => {
     setError('');
     stopCamera();
+    if (!isSecureBrowserContext()) {
+      setError(cameraErrorMessage());
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
@@ -56,7 +61,7 @@ export function DocumentScanner({ open, onClose, onSend }: DocumentScannerProps)
         await videoRef.current.play();
       }
     } catch {
-      setError('Camera access denied. Allow camera permission to scan documents.');
+      setError(cameraErrorMessage());
     }
   }, [stopCamera]);
 

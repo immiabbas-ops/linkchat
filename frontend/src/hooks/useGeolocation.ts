@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-
+import { geolocationErrorMessage, isSecureBrowserContext } from '@/lib/permissions';
 export interface GeoCoords {
   lat: number;
   lng: number;
@@ -22,17 +22,19 @@ export function useGeolocation() {
       return;
     }
 
+    if (!isSecureBrowserContext()) {
+      setError(geolocationErrorMessage(0, false));
+      setLoading(false);
+      return;
+    }
+
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
         setLoading(false);
       },
       (err) => {
-        setError(
-          err.code === 1
-            ? 'Allow location access to see nearby places.'
-            : 'Could not detect your location.',
-        );
+        setError(geolocationErrorMessage(err.code));
         setLoading(false);
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },

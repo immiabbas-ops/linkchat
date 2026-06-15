@@ -14,6 +14,7 @@ import { api } from '@/lib/api';
 import { compressImage } from '@/lib/utils';
 import { extensionForMime, getSupportedRecordingMime } from '@/lib/audio';
 import { getDraft, setDraft } from '@/lib/chat-preferences';
+import { cameraErrorMessage, isSecureBrowserContext, requestCurrentPosition } from '@/lib/permissions';
 import type { Message } from '@/types';
 
 interface ChatInputProps {
@@ -172,18 +173,22 @@ export function ChatInput({ chatId }: ChatInputProps) {
       fileInputRef.current?.click();
       fileInputRef.current!.dataset.attachmentType = type;
     } else if (type === 'camera') {
+      if (!isSecureBrowserContext()) {
+        setError(cameraErrorMessage());
+        return;
+      }
       cameraInputRef.current?.click();
     } else if (type === 'location') {
-      navigator.geolocation?.getCurrentPosition(async (pos) => {
-        try {
+      void requestCurrentPosition()
+        .then(async (pos) => {
           await sendMessage(chatId, 'Shared location', {
             type: 'LOCATION',
             metadata: { lat: pos.coords.latitude, lng: pos.coords.longitude },
           });
-        } catch {
-          setError('Could not send location.');
-        }
-      });
+        })
+        .catch((err: Error) => {
+          setError(err.message || 'Could not send location.');
+        });
     }
   };
 
@@ -305,7 +310,13 @@ export function ChatInput({ chatId }: ChatInputProps) {
 
             <button
               type="button"
-              onClick={() => cameraInputRef.current?.click()}
+              onClick={() => {
+                if (!isSecureBrowserContext()) {
+                  setError(cameraErrorMessage());
+                  return;
+                }
+                cameraInputRef.current?.click();
+              }}
               className="flex h-11 w-10 shrink-0 items-center justify-center text-[var(--text-secondary)]"
               aria-label="Camera"
             >
