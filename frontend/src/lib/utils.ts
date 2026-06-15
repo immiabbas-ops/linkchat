@@ -5,11 +5,27 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+function createDeviceId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {
+    /* randomUUID needs HTTPS in browsers */
+  }
+
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+    const rand = (Math.random() * 16) | 0;
+    const value = char === 'x' ? rand : (rand & 0x3) | 0x8;
+    return value.toString(16);
+  });
+}
+
 export function getDeviceId(): string {
   if (typeof window === 'undefined') return 'server';
   let id = localStorage.getItem('linkchat_device_id');
   if (!id) {
-    id = crypto.randomUUID();
+    id = createDeviceId();
     localStorage.setItem('linkchat_device_id', id);
   }
   return id;
