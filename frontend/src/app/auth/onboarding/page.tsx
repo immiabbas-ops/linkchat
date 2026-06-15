@@ -143,5 +143,3 @@ export default function OnboardingPage() {
     </AuthShell>
   );
 }
-
-export { ONBOARDING_KEY };
