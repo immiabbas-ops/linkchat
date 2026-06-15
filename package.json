@@ -1,0 +1,15 @@
+{
+  "name": "linkchat",
+  "private": true,
+  "scripts": {
+    "dev:db": "cd backend && node scripts/start-pglite-server.js",
+    "dev:db:restart": "powershell -NoProfile -Command \"Get-NetTCPConnection -LocalPort 5432 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 1\" && npm run dev:db",
+    "dev:stack:restart": "powershell -NoProfile -Command \"Get-NetTCPConnection -LocalPort 5432,4000,3000 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 2\"",
+    "dev:backend": "cd backend && npm run start:dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "db:push": "cd backend && npx prisma db push",
+    "install:all": "cd backend && npm install && cd ../frontend && npm install"
+  }
+}

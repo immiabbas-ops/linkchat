@@ -1,0 +1,191 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* LinkChat nebula theme — purple, magenta & cyan */
+:root {
+  --header: #1e1b4b;
+  --header-dark: #0b1026;
+  --header-text: #f8fafc;
+  --bg-primary: #0b1026;
+  --bg-secondary: #12162e;
+  --bg-panel: rgba(30, 27, 75, 0.95);
+  --bg-glass: rgba(30, 27, 75, 0.85);
+  --list-bg: #12162e;
+  --border-glass: rgba(148, 163, 184, 0.12);
+  --accent: #7c3aed;
+  --accent-light: #a855f7;
+  --accent-dark: #5b21b6;
+  --accent-cyan: #22d3ee;
+  --bubble-out: #6d28d9;
+  --bubble-out-text: #ffffff;
+  --bubble-out-meta: rgba(255, 255, 255, 0.72);
+  --bubble-in: rgba(255, 255, 255, 0.12);
+  --bubble-in-text: #f1f5f9;
+  --bubble-in-meta: rgba(241, 245, 249, 0.65);
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --success: #22c55e;
+  --read-tick: #22d3ee;
+  --danger: #f43f5e;
+  --input-bg: rgba(255, 255, 255, 0.06);
+  --input-bar: rgba(255, 255, 255, 0.06);
+  --nav-bg: #12162e;
+  --search-bg: rgba(255, 255, 255, 0.06);
+  --nav-active-pill: rgba(124, 58, 237, 0.25);
+}
+
+.light {
+  --header: #5b21b6;
+  --header-dark: #5b21b6;
+  --header-text: #ffffff;
+  --bg-primary: #f0f0f8;
+  --bg-secondary: #ffffff;
+  --bg-panel: #f8f8fc;
+  --bg-glass: rgba(255, 255, 255, 0.92);
+  --list-bg: #ffffff;
+  --border-glass: rgba(91, 33, 182, 0.08);
+  --accent: #7c3aed;
+  --accent-light: #a855f7;
+  --accent-dark: #5b21b6;
+  --accent-cyan: #0891b2;
+  --bubble-out: #7c3aed;
+  --bubble-out-text: #ffffff;
+  --bubble-out-meta: rgba(255, 255, 255, 0.75);
+  --bubble-in: #ffffff;
+  --bubble-in-text: #0f172a;
+  --bubble-in-meta: #64748b;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --success: #22c55e;
+  --read-tick: #0891b2;
+  --input-bg: #ffffff;
+  --input-bar: #ffffff;
+  --nav-bg: #ffffff;
+  --search-bg: #f1f5f9;
+  --nav-active-pill: #ede9fe;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer utilities {
+  .glass {
+    background: var(--bg-glass);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border-glass);
+  }
+
+  .glass-strong {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-glass);
+  }
+
+  .wa-header {
+    background: var(--header);
+    color: var(--header-text);
+  }
+
+  .wa-header * {
+    color: inherit;
+  }
+
+  .wa-chat-bg {
+    background-color: var(--bg-primary);
+    background-image:
+      radial-gradient(ellipse 80% 50% at 20% 20%, rgba(124, 58, 237, 0.08), transparent 50%),
+      radial-gradient(ellipse 60% 40% at 80% 80%, rgba(6, 182, 212, 0.06), transparent 50%);
+  }
+
+  .wa-bubble-out {
+    border-radius: 8px;
+    border-top-right-radius: 0;
+    background-color: var(--bubble-out);
+    color: var(--bubble-out-text);
+  }
+
+  .wa-bubble-out::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: -8px;
+    width: 8px;
+    height: 13px;
+    background: radial-gradient(circle at top right, transparent 8px, var(--bubble-out) 0);
+  }
+
+  .wa-bubble-in {
+    border-radius: 8px;
+    border-top-left-radius: 0;
+    background-color: var(--bubble-in);
+    color: var(--bubble-in-text);
+  }
+
+  .wa-bubble-in::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -8px;
+    width: 8px;
+    height: 13px;
+    background: radial-gradient(circle at top left, transparent 8px, var(--bubble-in) 0);
+  }
+
+  .wa-list-bg {
+    background: var(--list-bg);
+  }
+
+  .wa-fab {
+    background: var(--accent-dark);
+    color: #ffffff;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.2);
+  }
+
+  .wa-input-bar {
+    background: var(--input-bar);
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  .gradient-accent {
+    background: var(--accent);
+  }
+
+  .gradient-accent:hover {
+    background: var(--accent-dark);
+  }
+
+  .text-gradient {
+    color: var(--text-primary);
+  }
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0);
+}

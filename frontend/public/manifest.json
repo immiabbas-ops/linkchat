@@ -1,0 +1,18 @@
+{
+  "name": "Link-Chat",
+  "short_name": "LinkChat",
+  "description": "Next-generation communication + services super app",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111b21",
+  "theme_color": "#008069",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

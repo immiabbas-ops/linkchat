@@ -1,0 +1,616 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  CHILD
+}
+
+enum ChatType {
+  PRIVATE
+  GROUP
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  VOICE
+  DOCUMENT
+  LOCATION
+  CONTACT
+  FILE
+  NOTE
+  SYSTEM
+}
+
+enum MessageStatus {
+  SENT
+  DELIVERED
+  READ
+}
+
+enum DeleteScope {
+  ME
+  EVERYONE
+}
+
+enum ServiceType {
+  TAXI
+  FOOD
+  JOBS
+  REALESTATE
+  NEWS
+  TRIP
+}
+
+enum NotificationType {
+  MESSAGE
+  MENTION
+  SYSTEM
+  SERVICE
+  FAMILY
+}
+
+enum FamilyRole {
+  OWNER
+  SPOUSE
+  CHILD
+}
+
+enum ConnectorType {
+  TELEGRAM
+  EMAIL
+  DISCORD
+  MATRIX
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  role          UserRole  @default(USER)
+  isActive      Boolean   @default(true)
+  lastSeenAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  profile       Profile?
+  devices       Device[]
+  sessions      Session[]
+  chatMembers   ChatMember[]
+  messages      Message[]         @relation("MessageSender")
+  messageReads  MessageRead[]
+  reactions     MessageReaction[]
+  starredMessages StarredMessage[]
+  pinnedChats   PinnedChat[]
+  storyViews    StoryView[]
+  notifications Notification[]
+  settings      UserSettings?
+  ownedFamilies FamilyGroup[]     @relation("FamilyOwner")
+  familyMembers FamilyMember[]
+  childProfile  ChildProfile?
+  chatConnectors ChatConnector[]
+  telegramBridgesOwned    TelegramBridge[] @relation("TelegramBridgeOwner")
+  telegramBridgesExternal TelegramBridge[] @relation("TelegramBridgeExternal")
+  blockedUsers            BlockedUser[]    @relation("BlockedBy")
+  blockedBy               BlockedUser[]    @relation("BlockedTarget")
+  contacts                Contact[]        @relation("UserContacts")
+  contactOf               Contact[]        @relation("ContactUsers")
+
+  @@index([email])
+  @@map("users")
+}
+
+model Profile {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  displayName String
+  avatarUrl   String?
+  bio         String?
+  phone       String?  @unique
+  locale      String   @default("en")
+  theme       String   @default("dark")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("profiles")
+}
+
+model Device {
+  id           String   @id @default(uuid())
+  userId       String
+  deviceId     String
+  deviceName   String
+  deviceType   String   @default("web")
+  pushToken    String?
+  lastActiveAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
+  @@unique([userId, deviceId])
+  @@index([userId])
+  @@map("devices")
+}
+
+model Session {
+  id               String   @id @default(uuid())
+  userId           String
+  deviceId         String
+  refreshTokenHash String
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  createdAt        DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshTokenHash])
+  @@map("sessions")
+}
+
+model OtpCode {
+  id        String   @id @default(uuid())
+  email     String
+  code      String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([email, code])
+  @@map("otp_codes")
+}
+
+model Chat {
+  id          String   @id @default(uuid())
+  type        ChatType @default(PRIVATE)
+  name        String?
+  avatarUrl   String?
+  description String?
+  isSecret    Boolean  @default(false)
+  disappearAfter Int?
+  pinnedMessageId String?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members        ChatMember[]
+  messages       Message[]
+  pinnedBy       PinnedChat[]
+  telegramBridge TelegramBridge?
+
+  @@map("chats")
+}
+
+model ChatMember {
+  id         String    @id @default(uuid())
+  chatId     String
+  userId     String
+  role       String    @default("member")
+  joinedAt   DateTime  @default(now())
+  leftAt     DateTime?
+  mutedUntil DateTime?
+  archivedAt DateTime?
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId])
+  @@index([userId])
+  @@map("chat_members")
+}
+
+model Message {
+  id              String        @id @default(uuid())
+  chatId          String
+  senderId        String
+  type            MessageType   @default(TEXT)
+  content         String?
+  replyToId       String?
+  forwardedFromId String?
+  status          MessageStatus @default(SENT)
+  editedAt        DateTime?
+  deletedForAll   Boolean       @default(false)
+  deletedAt       DateTime?
+  expiresAt       DateTime?
+  metadata        Json?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  chat          Chat              @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender        User              @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo       Message?          @relation("MessageReplies", fields: [replyToId], references: [id])
+  replies       Message[]         @relation("MessageReplies")
+  reads         MessageRead[]
+  reactions     MessageReaction[]
+  mediaFiles    MediaFile[]
+  starredBy     StarredMessage[]
+  deletedFor    DeletedMessage[]
+
+  @@index([chatId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+model MessageRead {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  readAt    DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@map("message_reads")
+}
+
+model MessageReaction {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@map("message_reactions")
+}
+
+model DeletedMessage {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  deletedAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@map("deleted_messages")
+}
+
+model StarredMessage {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  starredAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@map("starred_messages")
+}
+
+model BlockedUser {
+  id            String   @id @default(uuid())
+  userId        String
+  blockedUserId String
+  createdAt     DateTime @default(now())
+
+  user          User @relation("BlockedBy", fields: [userId], references: [id], onDelete: Cascade)
+  blockedUser   User @relation("BlockedTarget", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, blockedUserId])
+  @@map("blocked_users")
+}
+
+model Contact {
+  id            String   @id @default(uuid())
+  userId        String
+  contactUserId String
+  savedName     String
+  phone         String
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user        User @relation("UserContacts", fields: [userId], references: [id], onDelete: Cascade)
+  contactUser User @relation("ContactUsers", fields: [contactUserId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, contactUserId])
+  @@index([userId])
+  @@map("contacts")
+}
+
+model PinnedChat {
+  id       String   @id @default(uuid())
+  chatId   String
+  userId   String
+  pinnedAt DateTime @default(now())
+  order    Int      @default(0)
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId])
+  @@map("pinned_chats")
+}
+
+model MediaFile {
+  id           String   @id @default(uuid())
+  messageId    String?
+  uploaderId   String
+  fileName     String
+  mimeType     String
+  fileSize     Int
+  storageKey   String
+  url          String
+  thumbnailUrl String?
+  width        Int?
+  height       Int?
+  duration     Int?
+  createdAt    DateTime @default(now())
+
+  message Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([messageId])
+  @@map("media_files")
+}
+
+model Story {
+  id        String   @id @default(uuid())
+  userId    String
+  mediaUrl  String
+  caption   String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  views StoryView[]
+
+  @@index([userId])
+  @@map("stories")
+}
+
+model StoryView {
+  id       String   @id @default(uuid())
+  storyId  String
+  viewerId String
+  viewedAt DateTime @default(now())
+
+  story  Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  viewer User  @relation(fields: [viewerId], references: [id], onDelete: Cascade)
+
+  @@unique([storyId, viewerId])
+  @@map("story_views")
+}
+
+model ServiceTaxi {
+  id          String   @id @default(uuid())
+  userId      String
+  pickup      String
+  dropoff     String
+  status      String   @default("pending")
+  fare        Float?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@map("services_taxi")
+}
+
+model ServiceTrip {
+  id          String   @id @default(uuid())
+  userId      String
+  title       String
+  destination String
+  fromCity    String?
+  toCity      String?
+  departDate  String?
+  returnDate  String?
+  checkIn     String?
+  checkOut    String?
+  travelers   Int      @default(1)
+  notes       String?
+  status      String   @default("planned")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@map("services_trips")
+}
+
+model ServiceJob {
+  id          String   @id @default(uuid())
+  title       String
+  company     String
+  location    String
+  salary      String?
+  description String
+  postedById  String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@map("services_jobs")
+}
+
+model ServiceFood {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  price       Float
+  imageUrl    String?
+  category    String
+  vendorId    String
+  isAvailable Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@map("services_food")
+}
+
+model ServiceRealEstate {
+  id          String   @id @default(uuid())
+  title       String
+  description String
+  price       Float
+  location    String
+  bedrooms    Int?
+  bathrooms   Int?
+  area        Float?
+  imageUrls   String[]
+  agentId     String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@map("services_realestate")
+}
+
+model ServiceNews {
+  id          String   @id @default(uuid())
+  title       String
+  summary     String
+  content     String
+  imageUrl    String?
+  category    String
+  authorId    String
+  publishedAt DateTime @default(now())
+
+  @@map("services_news")
+}
+
+model FamilyGroup {
+  id        String   @id @default(uuid())
+  name      String
+  ownerId   String
+  createdAt DateTime @default(now())
+
+  owner   User           @relation("FamilyOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members FamilyMember[]
+  children ChildProfile[]
+
+  @@map("family_groups")
+}
+
+model FamilyMember {
+  id            String     @id @default(uuid())
+  familyGroupId String
+  userId        String
+  role          FamilyRole
+  permissions   Json?
+  joinedAt      DateTime   @default(now())
+
+  familyGroup FamilyGroup @relation(fields: [familyGroupId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([familyGroupId, userId])
+  @@map("family_members")
+}
+
+model ChildProfile {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  familyGroupId     String
+  displayName       String
+  age               Int?
+  screenTimeLimit   Int?
+  approvedContacts  String[]
+  restrictedMode    Boolean  @default(true)
+  createdAt         DateTime @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  familyGroup FamilyGroup @relation(fields: [familyGroupId], references: [id], onDelete: Cascade)
+
+  @@map("child_profiles")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+model UserSettings {
+  id                    String   @id @default(uuid())
+  userId                String   @unique
+  theme                 String   @default("dark")
+  locale                String   @default("en")
+  pushEnabled           Boolean  @default(true)
+  readReceipts          Boolean  @default(true)
+  lastSeenVisible       Boolean  @default(true)
+  translationEnabled    Boolean  @default(false)
+  defaultTranslateLang  String?
+  secretChatDefault     Int?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("settings")
+}
+
+model QrLoginSession {
+  id        String    @id @default(uuid())
+  token     String    @unique
+  userId    String?
+  deviceId  String?
+  expiresAt DateTime
+  scannedAt DateTime?
+  confirmedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([token])
+  @@map("qr_login_sessions")
+}
+
+model ChatConnector {
+  id         String        @id @default(uuid())
+  userId     String
+  type       ConnectorType
+  label      String
+  identifier String
+  config     Json?
+  enabled    Boolean       @default(true)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  telegramBridges  TelegramBridge[]
+
+  @@unique([userId, type, identifier])
+  @@index([userId])
+  @@map("chat_connectors")
+}
+
+model TelegramBridge {
+  id                     String   @id @default(uuid())
+  connectorId            String
+  ownerUserId            String
+  linkchatChatId         String   @unique
+  externalTelegramChatId String
+  externalUserId         String
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  connector    ChatConnector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  owner        User          @relation("TelegramBridgeOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  chat         Chat          @relation(fields: [linkchatChatId], references: [id], onDelete: Cascade)
+  externalUser User          @relation("TelegramBridgeExternal", fields: [externalUserId], references: [id], onDelete: Cascade)
+
+  @@unique([connectorId, externalTelegramChatId])
+  @@index([ownerUserId])
+  @@map("telegram_bridges")
+}
