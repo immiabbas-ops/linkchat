@@ -15,6 +15,7 @@ import type { PlaceDetails } from '@/types/food';
 import {
   formatDeliveryTime,
   formatPrice,
+  getCategoryEmoji,
 } from '@/lib/food-data';
 import { PlaceCoverBanner } from '@/components/hub/PlaceCoverBanner';
 import { formatDistance, mapsDirectionsUrl, mapsSearchUrl, telUrl } from '@/lib/places';
