@@ -29,6 +29,7 @@ import { socketService } from '@/lib/socket';
 import { getPresenceLabel } from '@/lib/presence';
 import { isOwnMessage } from '@/lib/messages';
 import { wallpaperStyle, isMessageExpired } from '@/lib/chat-preferences';
+import { resolveMediaUrl } from '@/lib/media-url';
 import { applySignedStamp, blobToFile } from '@/lib/document-utils';
 import type { Message } from '@/types';
 
