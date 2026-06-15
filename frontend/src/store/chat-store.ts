@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import { socketService } from '@/lib/socket';
 
 import { withMessageOwnership } from '@/lib/messages';
+import { resolveMediaUrl } from '@/lib/media-url';
 
 import { useAuthStore } from '@/store/auth-store';
 
@@ -101,6 +102,22 @@ function mergeMessage(existing: Message, incoming: Message): Message {
     mediaFiles: incoming.mediaFiles?.length ? incoming.mediaFiles : existing.mediaFiles,
     metadata: incoming.metadata ?? existing.metadata,
   };
+}
+
+function normalizeMessageMedia(message: Message): Message {
+  if (!message.mediaFiles?.length) return message;
+  return {
+    ...message,
+    mediaFiles: message.mediaFiles.map((file) => ({
+      ...file,
+      url: resolveMediaUrl(file.url),
+      thumbnailUrl: file.thumbnailUrl ? resolveMediaUrl(file.thumbnailUrl) : undefined,
+    })),
+  };
+}
+
+function normalizeMessage(message: Message, userId?: string | null): Message {
+  return withMessageOwnership(normalizeMessageMedia(message), userId);
 }
 
 function mergeMessagesById(incoming: Message[], existing: Message[] = []) {
@@ -226,7 +243,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       );
 
       const userId = useAuthStore.getState().user?.id;
-      const items = (result.items || []).map((m) => withMessageOwnership(m, userId));
+      const items = (result.items || []).map((m) => normalizeMessage(m, userId));
 
       set((state) => ({
         messages: {
@@ -257,14 +274,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const finalize = (message: Message) => {
       const userId = useAuthStore.getState().user?.id;
-      const normalized = withMessageOwnership(message, userId);
+      const normalized = normalizeMessage(message, userId);
 
       set((state) => {
         const list = (state.messages[chatId] || []).filter((m) => m.id !== optimistic.id);
         const existingIdx = list.findIndex((m) => m.id === normalized.id);
 
         if (existingIdx >= 0) {
-          list[existingIdx] = withMessageOwnership(
+          list[existingIdx] = normalizeMessage(
             mergeMessage(list[existingIdx], normalized),
             userId,
           );
@@ -358,7 +375,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const userId = useAuthStore.getState().user?.id;
 
-    const normalized = withMessageOwnership(message, userId);
+    const normalized = normalizeMessage(message, userId);
 
     if (!get().chats.some((c) => c.id === normalized.chatId)) {
 
@@ -385,7 +402,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (existingIdx >= 0) {
         nextMessages = withoutMatchingPending.map((m) =>
           m.id === normalized.id
-            ? withMessageOwnership(mergeMessage(m, normalized), userId)
+            ? normalizeMessage(mergeMessage(m, normalized), userId)
             : m,
         );
       } else {
@@ -733,7 +750,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         const userId = useAuthStore.getState().user?.id;
 
-        get().updateMessage(withMessageOwnership(data as Message, userId));
+        get().updateMessage(normalizeMessage(data as Message, userId));
 
       }),
 

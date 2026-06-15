@@ -37,7 +37,7 @@ export class MediaService {
     this.apiPublicUrl = this.config.get(
       'API_PUBLIC_URL',
       `http://localhost:${this.config.get('PORT', 4000)}/api/v1`,
-    );
+    ).replace(/\/$/, '');
     this.localDir = path.join(process.cwd(), 'uploads');
     fs.mkdirSync(this.localDir, { recursive: true });
 
@@ -222,5 +222,30 @@ export class MediaService {
       where: { id: mediaFileId },
       data: { messageId },
     });
+  }
+
+  /** Rewrite dev localhost URLs stored in DB to the public API origin. */
+  resolvePublicUrl(url?: string | null): string | undefined {
+    if (!url) return undefined;
+    try {
+      const parsed = new URL(url);
+      if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+        const base = new URL(`${this.apiPublicUrl}/`);
+        return `${base.origin}${parsed.pathname}${parsed.search}`;
+      }
+    } catch {
+      return url;
+    }
+    return url;
+  }
+
+  mapMediaFile<T extends { url: string; thumbnailUrl?: string | null }>(file: T): T {
+    return {
+      ...file,
+      url: this.resolvePublicUrl(file.url) ?? file.url,
+      ...(file.thumbnailUrl != null
+        ? { thumbnailUrl: this.resolvePublicUrl(file.thumbnailUrl) ?? file.thumbnailUrl }
+        : {}),
+    };
   }
 }

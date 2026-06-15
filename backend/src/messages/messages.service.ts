@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { MessageStatus, MessageType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { MediaService } from '../media/media.service';
 import {
   SendMessageDto,
   EditMessageDto,
@@ -16,7 +17,10 @@ import {
 
 @Injectable()
 export class MessagesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private media: MediaService,
+  ) {}
 
   async getMessages(chatId: string, userId: string, cursor?: string, limit = 30) {
     await this.ensureMember(chatId, userId);
@@ -345,7 +349,9 @@ export class MessagesService {
         displayName: r.user?.profile?.displayName,
       })),
       readBy: message.reads?.map((r: any) => ({ userId: r.userId, readAt: r.readAt })),
-      mediaFiles: message.mediaFiles,
+      mediaFiles: message.mediaFiles?.map((f: { url: string; thumbnailUrl?: string | null }) =>
+        this.media.mapMediaFile(f),
+      ),
       isStarred: message.starredBy?.length > 0,
       isOwn: message.senderId === userId,
     };

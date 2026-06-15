@@ -1,8 +1,10 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { MessagesService } from './messages.service';
 import { MessagesController } from './messages.controller';
+import { MediaModule } from '../media/media.module';
 
 @Module({
+  imports: [MediaModule],
   controllers: [MessagesController],
   providers: [MessagesService],
   exports: [MessagesService],
