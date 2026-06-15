@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useGeolocation } from '@/hooks/useGeolocation';
+import { httpsRequiredMessage, isSecureBrowserContext } from '@/lib/permissions';
 import { formatDistance } from '@/lib/places';
 import {
   enrichPlace,
@@ -228,14 +229,19 @@ export function FoodPanel() {
             <LocateFixed className="mx-auto h-10 w-10 text-amber-500" />
             <p className="mt-3 text-sm font-medium text-[var(--text-primary)]">{geoError}</p>
             <p className="mt-1 text-xs text-[var(--text-secondary)]">
-              Location is required to show nearby dining options.
+              {isSecureBrowserContext()
+                ? 'Location is required to show nearby dining options.'
+                : 'Browsers block GPS on http:// IP addresses. Use HTTPS (domain + SSL) for location, camera, and microphone.'}
             </p>
-            <button
-              onClick={refreshGeo}
-              className="mt-4 rounded-xl bg-orange-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-orange-600"
-            >
-              Enable Location
-            </button>
+            {isSecureBrowserContext() && (
+              <button
+                type="button"
+                onClick={refreshGeo}
+                className="mt-4 rounded-xl bg-orange-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-orange-600"
+              >
+                Enable Location
+              </button>
+            )}
           </div>
         ) : error ? (
           <div className="rounded-2xl border border-red-200/30 bg-red-500/10 p-6 text-center">
