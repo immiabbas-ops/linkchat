@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Car,
@@ -138,7 +138,7 @@ function ServiceRow({
   );
 }
 
-export default function HubPage() {
+function HubPageContent() {
   const searchParams = useSearchParams();
   const initialService = searchParams.get('service');
   const [activeService, setActiveService] = useState<string | null>(
@@ -250,5 +250,19 @@ export default function HubPage() {
         )}
       </div>
     </AuthGuard>
+  );
+}
+
+export default function HubPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center bg-[var(--list-bg)] text-sm text-[var(--text-secondary)]">
+          Loading hub…
+        </div>
+      }
+    >
+      <HubPageContent />
+    </Suspense>
   );
 }

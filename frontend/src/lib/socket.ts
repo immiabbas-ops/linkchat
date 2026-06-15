@@ -4,6 +4,12 @@ import type { Message } from '@/types';
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:4000/chat';
 
+function isMessage(value: unknown): value is Message {
+  if (!value || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  return typeof obj.id === 'string' && typeof obj.chatId === 'string';
+}
+
 type IoSocket = {
   connected: boolean;
   on: (event: string, handler: (...args: unknown[]) => void) => void;
@@ -110,13 +116,13 @@ class SocketService {
 
     const payload = response as Record<string, unknown>;
 
-    if (typeof payload.id === 'string') {
-      return payload as Message;
+    if (isMessage(payload)) {
+      return payload;
     }
 
     const nested = payload.data ?? payload.message ?? payload.result;
-    if (nested && typeof nested === 'object' && typeof (nested as Message).id === 'string') {
-      return nested as Message;
+    if (isMessage(nested)) {
+      return nested;
     }
 
     if (Array.isArray(response) && response[0] && typeof response[0] === 'object') {
