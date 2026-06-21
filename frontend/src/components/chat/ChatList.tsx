@@ -232,6 +232,8 @@ export function ChatList({ embedded = false }: { embedded?: boolean }) {
     }
   };
 
+  const showNewChatFab = !embedded && pathname === '/chats';
+
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-[var(--list-bg)]">
       <header className="safe-top bg-[var(--list-bg)]">
@@ -396,11 +398,11 @@ export function ChatList({ embedded = false }: { embedded?: boolean }) {
         )}
       </div>
 
-      {!embedded && !pathname.match(/\/chats\/[^/]+$/) && (
+      {showNewChatFab && (
         <button
           type="button"
           onClick={() => setShowNewChat(true)}
-          className="wa-fab absolute bottom-6 left-1/2 z-10 flex h-14 w-14 -translate-x-1/2 items-center justify-center rounded-full"
+          className="wa-fab absolute bottom-6 left-1/2 z-[1] flex h-14 w-14 -translate-x-1/2 items-center justify-center rounded-full"
           aria-label="New chat"
         >
           <MessageSquarePlus className="h-6 w-6" />

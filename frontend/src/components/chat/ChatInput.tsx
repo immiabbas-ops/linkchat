@@ -305,7 +305,7 @@ export function ChatInput({ chatId, isSmsChat = false, smsPeerPhone }: ChatInput
   return (
     <>
       <div
-        className={`safe-bottom relative z-10 wa-input-bar px-2 py-2 ${dragOver ? 'ring-2 ring-[var(--accent)] ring-inset' : ''}`}
+        className={`safe-bottom relative z-30 wa-input-bar px-2 py-2 ${dragOver ? 'ring-2 ring-[var(--accent)] ring-inset' : ''}`}
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
