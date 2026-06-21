@@ -54,9 +54,11 @@ export class AuthService {
     };
   }
 
-  private isDemoOtpAccepted(code: string): boolean {
+  /** Phone login/register use demo OTP only (no SMS). Email OTP keeps production guard. */
+  private isDemoOtpAccepted(code: string, phoneAuth = false): boolean {
     const demoCode = this.config.get('OTP_DEMO_CODE', '0000');
     if (code !== demoCode) return false;
+    if (phoneAuth) return true;
     if (this.config.get('NODE_ENV') !== 'production') return true;
     return this.config.get('ALLOW_DEMO_OTP', 'false') === 'true';
   }
@@ -150,7 +152,7 @@ export class AuthService {
       throw new BadRequestException('Enter a valid mobile number');
     }
 
-    if (!this.isDemoOtpAccepted(dto.code)) {
+    if (!this.isDemoOtpAccepted(dto.code, true)) {
       throw new BadRequestException('Invalid or expired OTP');
     }
 
@@ -168,7 +170,7 @@ export class AuthService {
       throw new BadRequestException('Enter a valid mobile number');
     }
 
-    if (!this.isDemoOtpAccepted(dto.code)) {
+    if (!this.isDemoOtpAccepted(dto.code, true)) {
       throw new BadRequestException('Invalid or expired OTP');
     }
 
