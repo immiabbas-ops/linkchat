@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { MoreVertical } from 'lucide-react';
 import type { Chat } from '@/types';
 
@@ -55,7 +56,10 @@ export function ChatHeaderMenu({
   onAction,
 }: ChatHeaderMenuProps) {
   const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [menuPos, setMenuPos] = useState({ top: 0, right: 0 });
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
 
   const isGroup = chat?.type === 'GROUP';
 
@@ -66,6 +70,27 @@ export function ChatHeaderMenu({
     }
     return [...privateMenuItems];
   }, [chat?.type, chat?.isContact, isGroup]);
+
+  useEffect(() => setMounted(true), []);
+
+  useEffect(() => {
+    if (!open) return;
+    const updatePosition = () => {
+      const rect = buttonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setMenuPos({
+        top: rect.bottom + 4,
+        right: Math.max(8, window.innerWidth - rect.right),
+      });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -119,29 +144,39 @@ export function ChatHeaderMenu({
 
   return (
     <div ref={ref} className="relative shrink-0">
-      <button type="button" onClick={() => setOpen((v) => !v)} className="rounded-full p-2 hover:bg-white/10" aria-label="Menu">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="wa-header-icon rounded-full p-2 hover:bg-white/10"
+        aria-label="Menu"
+      >
         <MoreVertical className="h-6 w-6" />
       </button>
-      {open && (
-        <div
-          role="menu"
-          className="chat-header-menu absolute right-0 top-full z-50 mt-1 max-h-[70vh] min-w-[220px] overflow-y-auto rounded-xl border border-[var(--border-glass)] bg-[var(--list-bg)] py-2 text-[var(--text-primary)] shadow-xl"
-        >
-          {menuItems.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="menuitem"
-              onClick={() => handleSelect(item.id)}
-              className={`block w-full px-6 py-3 text-left text-[14.5px] transition-colors hover:bg-black/[0.06] ${
-                'danger' in item && item.danger ? 'menu-item-danger' : ''
-              }`}
-            >
-              {label(item.id, item.label)}
-            </button>
-          ))}
-        </div>
-      )}
+      {mounted &&
+        open &&
+        createPortal(
+          <div
+            role="menu"
+            style={{ top: menuPos.top, right: menuPos.right }}
+            className="chat-header-menu fixed z-[250] max-h-[70vh] min-w-[220px] overflow-y-auto rounded-xl border border-[var(--border-glass)] py-2 shadow-xl"
+          >
+            {menuItems.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="menuitem"
+                onClick={() => handleSelect(item.id)}
+                className={`block w-full px-6 py-3 text-left text-[14.5px] text-[var(--text-primary)] transition-colors hover:bg-black/[0.06] ${
+                  'danger' in item && item.danger ? 'menu-item-danger' : ''
+                }`}
+              >
+                {label(item.id, item.label)}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

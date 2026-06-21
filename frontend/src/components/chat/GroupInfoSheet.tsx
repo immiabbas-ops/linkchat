@@ -165,9 +165,9 @@ export function GroupInfoSheet({ chat, chatId, open, onClose, onUpdated, onLeft 
           >
             <header className="safe-top flex items-center gap-3 border-b border-[var(--border-glass)] px-4 py-3">
               <button type="button" onClick={onClose} className="rounded-full p-2 hover:bg-black/[0.05]">
-                <X className="h-5 w-5" />
+                <X className="h-5 w-5 text-[var(--text-primary)]" />
               </button>
-              <h2 className="text-lg font-semibold">Group info</h2>
+              <h2 className="text-lg font-semibold text-[var(--text-primary)]">Group info</h2>
             </header>
 
             <div className="flex-1 overflow-y-auto">

@@ -101,17 +101,23 @@ body {
     color: var(--header-text);
   }
 
-  .wa-header * {
-    color: inherit;
+  /* Do not use .wa-header * — it forces white text onto dropdown menus in light theme */
+  .wa-header .wa-header-title,
+  .wa-header .wa-header-subtitle,
+  .wa-header .wa-header-icon {
+    color: var(--header-text);
   }
 
-  /* Dropdown menus inside the purple header need their own text color */
-  .wa-header .chat-header-menu,
-  .wa-header .chat-header-menu button {
+  .chat-header-menu {
+    color: var(--text-primary);
+    background: var(--list-bg);
+  }
+
+  .chat-header-menu button {
     color: var(--text-primary);
   }
 
-  .wa-header .chat-header-menu button.menu-item-danger {
+  .chat-header-menu button.menu-item-danger {
     color: var(--danger);
   }
 

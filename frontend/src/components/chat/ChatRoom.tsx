@@ -511,7 +511,7 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
           </>
         ) : (
           <>
-            <Link href="/chats" className="rounded-full p-2 hover:bg-white/10 md:hidden" aria-label="Back">
+            <Link href="/chats" className="wa-header-icon rounded-full p-2 hover:bg-white/10 md:hidden" aria-label="Back">
               <ArrowLeft className="h-6 w-6" />
             </Link>
             <button
@@ -522,15 +522,15 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
               <Avatar src={chat?.avatarUrl} name={chat?.title} size="md" online={chat?.isOnline} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
-                  <h2 className="truncate text-[16px] font-normal">{getChatDisplayTitle(chat) || 'Chat'}</h2>
+                  <h2 className="wa-header-title truncate text-[16px] font-normal">{getChatDisplayTitle(chat) || 'Chat'}</h2>
                   {chat?.isEncrypted && chat.source !== 'SMS' && chat.source !== 'TELEGRAM' && (
                     <Lock className="h-3.5 w-3.5 shrink-0 opacity-80" />
                   )}
                 </div>
-                {statusLine && <p className="truncate text-[13px] opacity-80">{statusLine}</p>}
+                {statusLine && <p className="wa-header-subtitle truncate text-[13px] opacity-80">{statusLine}</p>}
               </div>
             </button>
-            <button type="button" onClick={() => setShowSearch(true)} className="rounded-full p-2 hover:bg-white/10" aria-label="Search">
+            <button type="button" onClick={() => setShowSearch(true)} className="wa-header-icon rounded-full p-2 hover:bg-white/10" aria-label="Search">
               <SearchIcon className="h-5 w-5" />
             </button>
             <ChatHeaderMenu

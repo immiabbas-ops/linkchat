@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Search, MessageSquarePlus, Pin, X, MoreVertical, Archive, Lock, Users } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter, usePathname } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { Avatar } from '@/components/ui/Avatar';
 import { useChatStore } from '@/store/chat-store';
 import { AddPeopleSheet } from '@/components/contacts/AddPeopleSheet';
@@ -140,7 +140,6 @@ const menuItems = [
 
 export function ChatList({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
-  const pathname = usePathname();
   const { user } = useAuthStore();
   const { chats, fetchChats, isLoadingChats, typingUsers, recordingUsers, upsertChat } = useChatStore();
   const { connectors, fetchConnectors } = useConnectorStore();
@@ -232,8 +231,6 @@ export function ChatList({ embedded = false }: { embedded?: boolean }) {
     }
   };
 
-  const showNewChatFab = !embedded && pathname === '/chats';
-
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-[var(--list-bg)]">
       <header className="safe-top bg-[var(--list-bg)]">
@@ -241,6 +238,16 @@ export function ChatList({ embedded = false }: { embedded?: boolean }) {
           <h1 className="text-[22px] font-semibold text-[var(--accent-dark)]">LinkChat</h1>
           <div className="flex items-center gap-2">
             {simActive && <NewSmsButton />}
+            {!embedded && (
+              <button
+                type="button"
+                onClick={() => setShowNewChat(true)}
+                className="rounded-full p-2 text-[var(--accent-dark)] hover:bg-black/[0.05]"
+                aria-label="New chat"
+              >
+                <MessageSquarePlus className="h-6 w-6" />
+              </button>
+            )}
             <div className="relative" ref={menuRef}>
             <button
               type="button"
@@ -397,17 +404,6 @@ export function ChatList({ embedded = false }: { embedded?: boolean }) {
           </>
         )}
       </div>
-
-      {showNewChatFab && (
-        <button
-          type="button"
-          onClick={() => setShowNewChat(true)}
-          className="wa-fab absolute bottom-6 left-1/2 z-[1] flex h-14 w-14 -translate-x-1/2 items-center justify-center rounded-full"
-          aria-label="New chat"
-        >
-          <MessageSquarePlus className="h-6 w-6" />
-        </button>
-      )}
 
       <AddPeopleSheet
         open={showNewChat}
