@@ -271,7 +271,7 @@ export const MessageBubble = memo(function MessageBubble({
         onTouchCancel={handleTouchEnd}
         onClick={() => selectMode && onLongPress(message)}
         className={cn(
-          'relative max-w-[82%] cursor-pointer select-none shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] transition-transform',
+          'relative w-fit max-w-full cursor-pointer select-none shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] transition-transform',
           isVoice
             ? 'rounded-lg px-1.5 py-1'
             : isMediaVisual
@@ -382,11 +382,15 @@ export const MessageBubble = memo(function MessageBubble({
             <div className="mt-0.5 flex items-end justify-end">{renderTimeRow()}</div>
           </a>
         ) : isPlainText ? (
-          <div className="flex flex-wrap items-end gap-x-1.5 gap-y-0.5 text-[14.2px] leading-[19px]">
-            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+          <div className="text-[14.2px] leading-[19px]">
+            <span className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
               {textContent || '\u00A0'}
+              {/* Reserve space so the timestamp sits on the last line like WhatsApp */}
+              <span className="inline-block w-[52px]" aria-hidden="true" />
             </span>
-            {renderTimeRow()}
+            <span className="float-right -mt-[18px] ml-1.5 flex shrink-0 items-center">
+              {renderTimeRow()}
+            </span>
           </div>
         ) : null}
 
