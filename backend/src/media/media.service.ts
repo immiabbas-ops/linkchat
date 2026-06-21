@@ -205,6 +205,34 @@ export class MediaService {
     return filePath;
   }
 
+  async assertFileAccess(storageKey: string, userId?: string) {
+    const file = await this.prisma.mediaFile.findFirst({
+      where: { storageKey },
+      select: { uploaderId: true, messageId: true, message: { select: { chatId: true } } },
+    });
+    if (!file) throw new NotFoundException('File not found');
+
+    if (!file.messageId) {
+      if (!userId || file.uploaderId !== userId) {
+        throw new NotFoundException('File not found');
+      }
+      return;
+    }
+
+    if (!userId) return;
+
+    const member = await this.prisma.chatMember.findFirst({
+      where: {
+        chatId: file.message!.chatId,
+        userId,
+        leftAt: null,
+      },
+    });
+    if (member || file.uploaderId === userId) return;
+
+    throw new NotFoundException('File not found');
+  }
+
   async confirmUpload(mediaFileId: string, userId: string, fileSize: number) {
     const file = await this.prisma.mediaFile.findFirst({
       where: { id: mediaFileId, uploaderId: userId },
@@ -224,13 +252,21 @@ export class MediaService {
     });
   }
 
-  /** Rewrite dev localhost URLs stored in DB to the public API origin. */
+  /** Rewrite dev / IP / HTTP URLs stored in DB to the public HTTPS API origin. */
   resolvePublicUrl(url?: string | null): string | undefined {
     if (!url) return undefined;
     try {
       const parsed = new URL(url);
-      if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
-        const base = new URL(`${this.apiPublicUrl}/`);
+      const base = new URL(`${this.apiPublicUrl}/`);
+      const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(parsed.hostname);
+      const needsRewrite =
+        parsed.hostname === 'localhost' ||
+        parsed.hostname === '127.0.0.1' ||
+        isIp ||
+        (parsed.protocol === 'http:' && base.protocol === 'https:') ||
+        parsed.hostname !== base.hostname;
+
+      if (needsRewrite) {
         return `${base.origin}${parsed.pathname}${parsed.search}`;
       }
     } catch {

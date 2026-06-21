@@ -8,20 +8,24 @@ import { VoiceRecorder } from './VoiceRecorder';
 import { EmojiPicker } from './EmojiPicker';
 import { DocumentScanner } from './DocumentScanner';
 import { DocumentSignSheet } from './DocumentSignSheet';
+import { ImageComposer } from './ImageComposer';
 import { useChatStore } from '@/store/chat-store';
 import { socketService } from '@/lib/socket';
 import { api } from '@/lib/api';
 import { compressImage } from '@/lib/utils';
 import { extensionForMime, getSupportedRecordingMime } from '@/lib/audio';
+import { isVideoMedia } from '@/lib/message-media';
 import { getDraft, setDraft } from '@/lib/chat-preferences';
-import { cameraErrorMessage, isSecureBrowserContext, requestCurrentPosition } from '@/lib/permissions';
+import { cameraErrorMessage, getRecommendedSecureUrl, isSecureBrowserContext, requestCurrentPosition } from '@/lib/permissions';
 import type { Message } from '@/types';
 
 interface ChatInputProps {
   chatId: string;
+  isSmsChat?: boolean;
+  smsPeerPhone?: string;
 }
 
-export function ChatInput({ chatId }: ChatInputProps) {
+export function ChatInput({ chatId, isSmsChat = false, smsPeerPhone }: ChatInputProps) {
   const [text, setText] = useState('');
   const [showAttachments, setShowAttachments] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
@@ -32,11 +36,12 @@ export function ChatInput({ chatId }: ChatInputProps) {
   const [dragOver, setDragOver] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [pendingSignFile, setPendingSignFile] = useState<File | null>(null);
+  const [pendingImages, setPendingImages] = useState<File[] | null>(null);
   const typingTimeout = useRef<NodeJS.Timeout>();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { sendMessage, replyTo, setReplyTo } = useChatStore();
+  const { sendMessage, replyTo, setReplyTo, addMessage } = useChatStore();
 
   useEffect(() => {
     setText(getDraft(chatId));
@@ -46,9 +51,16 @@ export function ChatInput({ chatId }: ChatInputProps) {
     };
   }, [chatId]);
 
+  const draftTimer = useRef<NodeJS.Timeout>();
   useEffect(() => {
-    setDraft(chatId, text);
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    draftTimer.current = setTimeout(() => setDraft(chatId, text), 400);
+    return () => {
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+    };
   }, [chatId, text]);
+
+  const activeReply = replyTo?.chatId === chatId ? replyTo : null;
 
   const handleTyping = useCallback(() => {
     if (!socketService.isConnected()) return;
@@ -64,13 +76,21 @@ export function ChatInput({ chatId }: ChatInputProps) {
     setSending(true);
     setError('');
     try {
-      await sendMessage(chatId, content);
+      if (isSmsChat && smsPeerPhone) {
+        const result = await api.post<{ message: Message; chatId: string }>('/sim/send', {
+          to: smsPeerPhone.replace(/\D/g, ''),
+          body: content,
+        });
+        await addMessage(result.message);
+      } else {
+        await sendMessage(chatId, content);
+      }
       setText('');
       setDraft(chatId, '');
       setShowEmoji(false);
       socketService.setTyping(chatId, false);
     } catch {
-      setError('Could not send message. Check that the backend is running.');
+      setError(isSmsChat ? 'Could not send SMS. Check SIM activation.' : 'Could not send message. Check that the backend is running.');
     } finally {
       setSending(false);
       textareaRef.current?.focus();
@@ -95,15 +115,19 @@ export function ChatInput({ chatId }: ChatInputProps) {
     type: string,
     caption?: string,
     extraMeta?: Record<string, unknown>,
+    skipCompress = false,
   ) => {
     setUploadProgress(0);
     setError('');
     try {
-      const compressed = type === 'gallery' ? await compressImage(file) : file;
+      const shouldCompress =
+        !skipCompress &&
+        (type === 'gallery' || (type === 'document' && file.type.startsWith('image/')));
+      const compressed = shouldCompress ? await compressImage(file) : file;
       const formData = new FormData();
       formData.append('file', compressed);
 
-      setUploadProgress(50);
+      setUploadProgress(30);
       const { mediaFileId, url } = await api.upload<{
         mediaFileId: string;
         url: string;
@@ -117,20 +141,29 @@ export function ChatInput({ chatId }: ChatInputProps) {
           : type === 'scanner'
             ? 'DOCUMENT'
             : type === 'video'
-            ? 'VIDEO'
-            : type === 'audio'
-              ? 'VOICE'
-              : type === 'document'
-                ? 'DOCUMENT'
-                : 'FILE';
+              ? 'VIDEO'
+              : type === 'audio'
+                ? 'VOICE'
+                : isVideoMedia(compressed.type, undefined, file.name)
+                  ? 'VIDEO'
+                  : type === 'document'
+                    ? 'DOCUMENT'
+                    : 'FILE';
 
       const content =
         caption?.trim() ||
-        (messageType === 'IMAGE' ? '' : file.name);
+        (messageType === 'IMAGE' || messageType === 'VIDEO' ? '' : file.name);
 
       await sendMessage(chatId, content, {
         type: messageType as Message['type'],
-        metadata: { mediaFileId, url, ...extraMeta },
+        metadata: {
+          mediaFileId,
+          url,
+          fileName: file.name,
+          mimeType: compressed.type || file.type,
+          fileSize: compressed.size,
+          ...extraMeta,
+        },
       });
       if (caption) setText('');
     } catch {
@@ -140,6 +173,13 @@ export function ChatInput({ chatId }: ChatInputProps) {
     }
   };
 
+  const openImageComposer = (imageFiles: File[]) => {
+    if (!imageFiles.length) return;
+    setError('');
+    setShowEmoji(false);
+    setPendingImages(imageFiles);
+  };
+
   const handlePaste = (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -147,7 +187,7 @@ export function ChatInput({ chatId }: ChatInputProps) {
       if (item.type.startsWith('image/')) {
         e.preventDefault();
         const file = item.getAsFile();
-        if (file) void uploadFile(file, 'gallery', text.trim() || undefined);
+        if (file) openImageComposer([file]);
         return;
       }
     }
@@ -158,11 +198,11 @@ export function ChatInput({ chatId }: ChatInputProps) {
     setDragOver(false);
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
-    const type = file.type.startsWith('image/')
-      ? 'gallery'
-      : file.type.startsWith('video/')
-        ? 'video'
-        : 'document';
+    if (file.type.startsWith('image/')) {
+      openImageComposer([file]);
+      return;
+    }
+    const type = file.type.startsWith('video/') ? 'video' : 'document';
     void uploadFile(file, type, text.trim() || undefined);
   };
 
@@ -170,8 +210,15 @@ export function ChatInput({ chatId }: ChatInputProps) {
     if (type === 'scanner') {
       setShowScanner(true);
     } else if (type === 'gallery' || type === 'video' || type === 'document' || type === 'files') {
-      fileInputRef.current?.click();
-      fileInputRef.current!.dataset.attachmentType = type;
+      const input = fileInputRef.current;
+      if (input) {
+        if (type === 'video') input.accept = 'video/*';
+        else if (type === 'gallery') input.accept = 'image/*,video/*';
+        else if (type === 'document') input.accept = 'image/*,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx';
+        else input.accept = '*/*';
+        input.click();
+        input.dataset.attachmentType = type;
+      }
     } else if (type === 'camera') {
       if (!isSecureBrowserContext()) {
         setError(cameraErrorMessage());
@@ -193,22 +240,47 @@ export function ChatInput({ chatId }: ChatInputProps) {
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const selected = e.target.files ? Array.from(e.target.files) : [];
     const type = e.target.dataset.attachmentType || 'files';
-    if (file) {
-      if ((type === 'document' || type === 'files') && file.type.startsWith('image/')) {
-        setPendingSignFile(file);
-      } else {
-        void uploadFile(file, type);
-      }
-    }
     e.target.value = '';
+
+    if (!selected.length) return;
+
+    const videos = selected.filter((f) => f.type.startsWith('video/') || isVideoMedia(f.type, undefined, f.name));
+    const images = selected.filter((f) => f.type.startsWith('image/') && !isVideoMedia(f.type, undefined, f.name));
+
+    if (type === 'gallery') {
+      if (images.length) openImageComposer(images);
+      for (const v of videos) void uploadFile(v, 'video', text.trim() || undefined);
+      return;
+    }
+
+    const file = selected[0];
+    if (file.type.startsWith('video/') || isVideoMedia(file.type, undefined, file.name)) {
+      void uploadFile(file, 'video', text.trim() || undefined);
+      return;
+    }
+
+    if ((type === 'document' || type === 'files') && file.type.startsWith('image/')) {
+      setPendingSignFile(file);
+    } else {
+      void uploadFile(file, type, text.trim() || undefined);
+    }
   };
 
   const handleCameraChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) void uploadFile(file, 'gallery');
     e.target.value = '';
+    if (file) openImageComposer([file]);
+  };
+
+  const handleComposerSend = async (files: File[], caption: string) => {
+    for (const file of files) {
+      await uploadFile(file, 'gallery', caption || undefined, undefined, true);
+    }
+    setText('');
+    setDraft(chatId, '');
+    setPendingImages(null);
   };
 
   const handleVoiceSend = async (blob: Blob) => {
@@ -238,11 +310,11 @@ export function ChatInput({ chatId }: ChatInputProps) {
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
       >
-        {replyTo && (
+        {activeReply && (
           <div className="mb-2 flex items-center justify-between rounded-lg border-l-4 border-[var(--accent)] bg-[var(--input-bg)] px-3 py-2">
             <div className="min-w-0 text-sm">
               <span className="font-medium text-[var(--accent-light)]">Replying to </span>
-              <span className="text-[var(--text-secondary)]">{replyTo.content?.slice(0, 50)}</span>
+              <span className="text-[var(--text-secondary)]">{activeReply.content?.slice(0, 50)}</span>
             </div>
             <button type="button" onClick={() => setReplyTo(null)} className="shrink-0 p-1">
               <X className="h-4 w-4 text-[var(--text-secondary)]" />
@@ -251,9 +323,17 @@ export function ChatInput({ chatId }: ChatInputProps) {
         )}
 
         {error && (
-          <p className="mb-2 rounded-lg bg-[var(--danger)]/15 px-3 py-2 text-sm text-[var(--danger)]">
-            {error}
-          </p>
+          <div className="mb-2 rounded-lg bg-[var(--danger)]/15 px-3 py-2 text-sm text-[var(--danger)]">
+            <p>{error}</p>
+            {error.includes('HTTPS') && (
+              <a
+                href={getRecommendedSecureUrl()}
+                className="mt-1 inline-block font-medium underline"
+              >
+                Open secure LinkChat
+              </a>
+            )}
+          </div>
         )}
 
         <EmojiPicker open={showEmoji} onSelect={insertEmoji} />
@@ -270,32 +350,36 @@ export function ChatInput({ chatId }: ChatInputProps) {
 
         <div className="flex items-end gap-2">
           <div className="flex min-h-[48px] flex-1 items-end rounded-[24px] bg-[var(--input-bg)] px-1 shadow-sm ring-1 ring-[var(--border-glass)]">
-            <button
-              type="button"
-              onClick={() => setShowEmoji((v) => !v)}
-              className={`flex h-11 w-10 shrink-0 items-center justify-center ${
-                showEmoji ? 'text-[var(--accent-light)]' : 'text-[var(--text-secondary)]'
-              }`}
-              aria-label="Emoji"
-            >
-              <Smile className="h-[26px] w-[26px]" />
-            </button>
+            {!isSmsChat && (
+              <button
+                type="button"
+                onClick={() => setShowEmoji((v) => !v)}
+                className={`flex h-11 w-10 shrink-0 items-center justify-center ${
+                  showEmoji ? 'text-[var(--accent-light)]' : 'text-[var(--text-secondary)]'
+                }`}
+                aria-label="Emoji"
+              >
+                <Smile className="h-[26px] w-[26px]" />
+              </button>
+            )}
 
             <textarea
               ref={textareaRef}
               value={text}
               onChange={(e) => {
                 setText(e.target.value);
-                handleTyping();
+                if (!isSmsChat) handleTyping();
               }}
               onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
-              placeholder="Message"
+              onPaste={isSmsChat ? undefined : handlePaste}
+              placeholder={isSmsChat ? 'SMS message' : 'Message'}
               rows={1}
               disabled={sending}
               className="max-h-28 min-h-[48px] flex-1 resize-none bg-transparent px-1 py-3 text-[16px] text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:outline-none disabled:opacity-60"
             />
 
+            {!isSmsChat && (
+              <>
             <button
               type="button"
               onClick={() => {
@@ -322,6 +406,8 @@ export function ChatInput({ chatId }: ChatInputProps) {
             >
               <Camera className="h-[22px] w-[22px]" />
             </button>
+              </>
+            )}
           </div>
 
           {text.trim() ? (
@@ -335,7 +421,7 @@ export function ChatInput({ chatId }: ChatInputProps) {
             >
               <Send className="h-5 w-5" />
             </motion.button>
-          ) : (
+          ) : !isSmsChat ? (
             <button
               type="button"
               onClick={() => {
@@ -347,7 +433,7 @@ export function ChatInput({ chatId }: ChatInputProps) {
             >
               <Mic className="h-6 w-6" />
             </button>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -370,6 +456,14 @@ export function ChatInput({ chatId }: ChatInputProps) {
         }}
       />
 
+      <ImageComposer
+        open={!!pendingImages?.length}
+        files={pendingImages || []}
+        initialCaption={text.trim()}
+        onClose={() => setPendingImages(null)}
+        onSend={handleComposerSend}
+      />
+
       <DocumentSignSheet
         open={!!pendingSignFile}
         file={pendingSignFile}
@@ -384,7 +478,13 @@ export function ChatInput({ chatId }: ChatInputProps) {
         }}
       />
 
-      <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        multiple
+        onChange={handleFileChange}
+      />
       <input
         ref={cameraInputRef}
         type="file"

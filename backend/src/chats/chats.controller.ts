@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ChatsService } from './chats.service';
-import { CreatePrivateChatDto, CreateGroupChatDto, UpdateChatDto } from './dto/chat.dto';
+import { CreatePrivateChatDto, CreateGroupChatDto, UpdateChatDto, AddGroupMembersDto } from './dto/chat.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @ApiTags('chats')
@@ -54,6 +54,29 @@ export class ChatsController {
     @Body() dto: CreateGroupChatDto,
   ) {
     return this.chats.createGroupChat(req.user.userId, dto);
+  }
+
+  @Post(':id/members')
+  addMembers(
+    @Param('id') id: string,
+    @Req() req: { user: { userId: string } },
+    @Body() dto: AddGroupMembersDto,
+  ) {
+    return this.chats.addGroupMembers(id, req.user.userId, dto);
+  }
+
+  @Post(':id/leave')
+  leaveGroup(@Param('id') id: string, @Req() req: { user: { userId: string } }) {
+    return this.chats.leaveGroup(id, req.user.userId);
+  }
+
+  @Post(':id/members/:memberId/remove')
+  removeMember(
+    @Param('id') id: string,
+    @Param('memberId') memberId: string,
+    @Req() req: { user: { userId: string } },
+  ) {
+    return this.chats.removeGroupMember(id, req.user.userId, memberId);
   }
 
   @Patch(':id')

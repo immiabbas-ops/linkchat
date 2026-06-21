@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Body, Query, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Patch, Body, Query, UseGuards, Req, Param } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from '../auth/dto/auth.dto';
@@ -27,6 +27,14 @@ export class UsersController {
     @Query('q') q: string,
   ) {
     return this.users.searchUsers(q, req.user.userId);
+  }
+
+  @Get('by-username/:username')
+  getByUsername(
+    @Req() req: { user: { userId: string } },
+    @Param('username') username: string,
+  ) {
+    return this.users.getByUsername(username, req.user.userId);
   }
 
   @Patch('settings')

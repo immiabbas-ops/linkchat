@@ -14,6 +14,8 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { ConnectorsModule } from './connectors/connectors.module';
 import { ContactsModule } from './contacts/contacts.module';
 import { TelegramModule } from './telegram/telegram.module';
+import { SimModule } from './sim/sim.module';
+import { E2eeModule } from './e2ee/e2ee.module';
 import { ChatGateway } from './gateway/chat.gateway';
 import { HealthController } from './health.controller';
 
@@ -34,6 +36,8 @@ import { HealthController } from './health.controller';
     ConnectorsModule,
     ContactsModule,
     TelegramModule,
+    SimModule,
+    E2eeModule,
   ],
   controllers: [HealthController],
   providers: [ChatGateway],

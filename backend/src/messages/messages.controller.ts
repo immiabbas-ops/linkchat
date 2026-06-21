@@ -41,7 +41,7 @@ export class MessagesController {
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.messages.getMessages(chatId, req.user.userId, cursor, limit ? parseInt(limit) : 30);
+    return this.messages.getMessages(chatId, req.user.userId, cursor, limit ? parseInt(limit, 10) || 30 : 30);
   }
 
   @Post()
@@ -80,12 +80,15 @@ export class MessagesController {
   }
 
   @Post(':id/forward')
-  forward(
+  async forward(
     @Param('id') id: string,
     @Req() req: { user: { userId: string } },
     @Body() dto: ForwardMessageDto,
   ) {
-    return this.messages.forwardMessage(id, req.user.userId, dto);
+    const message = await this.messages.forwardMessage(id, req.user.userId, dto);
+    const gateway = this.moduleRef.get(ChatGateway, { strict: false });
+    await gateway?.publishMessage(dto.targetChatId, message);
+    return message;
   }
 
   @Post(':id/star')
@@ -94,8 +97,17 @@ export class MessagesController {
   }
 
   @Post('read')
-  markRead(@Req() req: { user: { userId: string } }, @Body() dto: MarkReadDto) {
-    return this.messages.markAsRead(dto.chatId, req.user.userId, dto.messageId);
+  async markRead(@Req() req: { user: { userId: string } }, @Body() dto: MarkReadDto) {
+    const result = await this.messages.markAsRead(dto.chatId, req.user.userId, dto.messageId);
+    if (result.messageIds?.length) {
+      const gateway = this.moduleRef.get(ChatGateway, { strict: false });
+      await gateway?.publishRead(dto.chatId, {
+        chatId: dto.chatId,
+        userId: req.user.userId,
+        messageIds: result.messageIds,
+      });
+    }
+    return result;
   }
 
   @Get('search')

@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect } from 'react';
 import { useThemeStore } from '@/store/theme-store';
+import { redirectToSecureIfNeeded } from '@/lib/permissions';
 
 function applyTheme(theme: 'dark' | 'light') {
   document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -14,6 +15,10 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   useLayoutEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  useLayoutEffect(() => {
+    redirectToSecureIfNeeded();
+  }, []);
 
   useEffect(() => {
     applyTheme(useThemeStore.getState().theme);

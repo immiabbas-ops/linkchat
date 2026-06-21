@@ -5,15 +5,18 @@ import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import { AuthGuard } from '@/components/auth/AuthGuard';
 import { Avatar } from '@/components/ui/Avatar';
+import { QrContactCard } from '@/components/contacts/QrContactCard';
 import { useAuthStore } from '@/store/auth-store';
 import { useThemeStore } from '@/store/theme-store';
 import { api } from '@/lib/api';
+import { formatUsername, isValidUsername, normalizeUsername, usernameHint } from '@/lib/username';
 import type { User } from '@/types';
 
 export default function ProfilePage() {
   const { user, updateUser } = useAuthStore();
   const { setTheme } = useThemeStore();
   const [displayName, setDisplayName] = useState('');
+  const [username, setUsername] = useState('');
   const [phone, setPhone] = useState('');
   const [bio, setBio] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
@@ -25,6 +28,7 @@ export default function ProfilePage() {
   useEffect(() => {
     if (!user?.profile) return;
     setDisplayName(user.profile.displayName || '');
+    setUsername(user.profile.username || '');
     setPhone(user.profile.phone || '');
     setBio(user.profile.bio || '');
     setAvatarUrl(user.profile.avatarUrl || '');
@@ -37,9 +41,17 @@ export default function ProfilePage() {
     setError('');
     setMessage('');
 
+    const normalizedUsername = normalizeUsername(username);
+    if (normalizedUsername && !isValidUsername(normalizedUsername)) {
+      setError('Choose a valid username. ' + usernameHint());
+      setSaving(false);
+      return;
+    }
+
     try {
       const updated = await api.patch<User>('/users/me', {
         displayName,
+        username: normalizedUsername || undefined,
         phone,
         bio,
         avatarUrl: avatarUrl || undefined,
@@ -70,7 +82,11 @@ export default function ProfilePage() {
         <form onSubmit={handleSave} className="flex-1 overflow-y-auto scrollbar-hide">
           <div className="flex flex-col items-center bg-[var(--bg-panel)] py-8">
             <Avatar src={avatarUrl || user?.profile?.avatarUrl} name={displayName} size="xl" />
-            <p className="mt-3 text-sm text-[var(--accent-dark)]">Tap to change photo (URL below)</p>
+            {user?.profile?.username && (
+              <p className="mt-2 text-sm font-medium text-[var(--accent-dark)]">
+                {formatUsername(user.profile.username)}
+              </p>
+            )}
           </div>
 
           <div className="mt-2 bg-[var(--list-bg)]">
@@ -82,6 +98,16 @@ export default function ProfilePage() {
                 required
                 className="mt-1 w-full bg-transparent text-[17px] text-[var(--text-primary)] focus:outline-none"
               />
+            </label>
+            <label className="block border-b border-[var(--border-glass)] px-4 py-3">
+              <span className="text-xs text-[var(--accent-dark)]">Username</span>
+              <input
+                value={username}
+                onChange={(e) => setUsername(e.target.value.replace(/\s/g, ''))}
+                placeholder="johndoe"
+                className="mt-1 w-full bg-transparent text-[17px] text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:outline-none"
+              />
+              <p className="mt-1 text-[11px] text-[var(--text-secondary)]">{usernameHint()}</p>
             </label>
             <label className="block border-b border-[var(--border-glass)] px-4 py-3">
               <span className="text-xs text-[var(--accent-dark)]">About</span>
@@ -126,10 +152,17 @@ export default function ProfilePage() {
             </div>
           </div>
 
+          <div className="mt-4 px-4">
+            <QrContactCard
+              compact
+              displayName={displayName || user?.profile?.displayName}
+              username={username || user?.profile?.username}
+              avatarUrl={avatarUrl || user?.profile?.avatarUrl}
+            />
+          </div>
+
           {(message || error) && (
-            <p
-              className={`px-4 py-3 text-sm ${error ? 'text-[var(--danger)]' : 'text-[var(--accent-dark)]'}`}
-            >
+            <p className={`px-4 py-3 text-sm ${error ? 'text-[var(--danger)]' : 'text-[var(--accent-dark)]'}`}>
               {error || message}
             </p>
           )}

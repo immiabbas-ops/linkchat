@@ -2,7 +2,7 @@ import { Injectable, NotFoundException, ForbiddenException, BadRequestException 
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { ContactsService } from '../contacts/contacts.service';
-import { CreatePrivateChatDto, CreateGroupChatDto, UpdateChatDto } from './dto/chat.dto';
+import { CreatePrivateChatDto, CreateGroupChatDto, UpdateChatDto, AddGroupMembersDto } from './dto/chat.dto';
 
 @Injectable()
 export class ChatsService {
@@ -26,6 +26,7 @@ export class ChatsService {
           },
         },
         telegramBridge: true,
+        smsThread: true,
         messages: {
           take: 1,
           orderBy: { createdAt: 'desc' },
@@ -73,7 +74,7 @@ export class ChatsService {
     const contactMap = await this.contacts.getContactMap(userId);
 
     const visibleItems = items.filter((chat) => {
-      if (chat.type !== 'PRIVATE' || chat.telegramBridge) return true;
+      if (chat.type !== 'PRIVATE' || chat.telegramBridge || chat.smsThread) return true;
       const other = chat.members.find((m) => m.userId !== userId);
       if (!other) return false;
       // Saved contacts always appear in the list.
@@ -100,6 +101,7 @@ export class ChatsService {
           include: { user: { include: { profile: true } } },
         },
         telegramBridge: true,
+        smsThread: true,
       },
     });
     if (!chat) throw new NotFoundException('Chat not found');
@@ -131,6 +133,7 @@ export class ChatsService {
     const chat = await this.prisma.chat.create({
       data: {
         type: 'PRIVATE',
+        isSecret: true,
         createdById: userId,
         members: {
           create: [{ userId }, { userId: dto.participantId }],
@@ -141,12 +144,44 @@ export class ChatsService {
     return this.getChat(chat.id, userId);
   }
 
+  private normalizePhone(phone: string) {
+    return phone.replace(/\D/g, '');
+  }
+
+  private async resolvePhonesToUserIds(phones: string[], excludeUserId?: string) {
+    const ids: string[] = [];
+    const notFound: string[] = [];
+    for (const raw of phones) {
+      const digits = this.normalizePhone(raw);
+      if (digits.length < 7) continue;
+      const profile = await this.prisma.profile.findFirst({
+        where: {
+          phone: digits,
+          ...(excludeUserId ? { NOT: { userId: excludeUserId } } : {}),
+        },
+      });
+      if (profile) ids.push(profile.userId);
+      else notFound.push(digits);
+    }
+    return { ids, notFound };
+  }
+
   async createGroupChat(userId: string, dto: CreateGroupChatDto) {
-    const memberIds = [...new Set([userId, ...dto.participantIds])];
+    const fromPhones = dto.participantPhones?.length
+      ? (await this.resolvePhonesToUserIds(dto.participantPhones, userId)).ids
+      : [];
+    const memberIds = [...new Set([userId, ...(dto.participantIds || []), ...fromPhones])];
+
+    if (memberIds.length < 2) {
+      throw new BadRequestException('Add at least one other participant by contact or phone number');
+    }
+
     const chat = await this.prisma.chat.create({
       data: {
         type: 'GROUP',
         name: dto.name,
+        description: dto.description,
+        isSecret: true,
         createdById: userId,
         members: {
           create: memberIds.map((id) => ({ userId: id, role: id === userId ? 'admin' : 'member' })),
@@ -154,6 +189,75 @@ export class ChatsService {
       },
     });
     return this.getChat(chat.id, userId);
+  }
+
+  async addGroupMembers(chatId: string, userId: string, dto: AddGroupMembersDto) {
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      include: { members: { where: { leftAt: null } } },
+    });
+    if (!chat || chat.type !== 'GROUP') throw new NotFoundException('Group not found');
+    await this.ensureMember(chatId, userId);
+
+    const caller = chat.members.find((m) => m.userId === userId);
+    if (caller?.role !== 'admin' && chat.createdById !== userId) {
+      throw new ForbiddenException('Only group admins can add members');
+    }
+
+    const fromPhones = dto.phones?.length
+      ? (await this.resolvePhonesToUserIds(dto.phones, userId)).ids
+      : [];
+    const newIds = [...new Set([...(dto.userIds || []), ...fromPhones])].filter(
+      (id) => !chat.members.some((m) => m.userId === id),
+    );
+
+    if (!newIds.length) return this.getChat(chatId, userId);
+
+    await this.prisma.chatMember.createMany({
+      data: newIds.map((id) => ({ chatId, userId: id, role: 'member' })),
+      skipDuplicates: true,
+    });
+
+    await this.prisma.chat.update({
+      where: { id: chatId },
+      data: { updatedAt: new Date() },
+    });
+
+    return this.getChat(chatId, userId);
+  }
+
+  async removeGroupMember(chatId: string, adminId: string, memberId: string) {
+    const chat = await this.prisma.chat.findUnique({ where: { id: chatId } });
+    if (!chat || chat.type !== 'GROUP') throw new NotFoundException('Group not found');
+    await this.ensureMember(chatId, adminId);
+
+    if (memberId === adminId) throw new BadRequestException('Use leave group to exit');
+    if (chat.createdById !== adminId) {
+      const admin = await this.prisma.chatMember.findFirst({
+        where: { chatId, userId: adminId, leftAt: null },
+      });
+      if (admin?.role !== 'admin') throw new ForbiddenException('Only admins can remove members');
+    }
+
+    await this.prisma.chatMember.updateMany({
+      where: { chatId, userId: memberId, leftAt: null },
+      data: { leftAt: new Date() },
+    });
+
+    return this.getChat(chatId, adminId);
+  }
+
+  async leaveGroup(chatId: string, userId: string) {
+    const chat = await this.prisma.chat.findUnique({ where: { id: chatId } });
+    if (!chat || chat.type !== 'GROUP') throw new NotFoundException('Group not found');
+    await this.ensureMember(chatId, userId);
+
+    await this.prisma.chatMember.updateMany({
+      where: { chatId, userId, leftAt: null },
+      data: { leftAt: new Date() },
+    });
+
+    return { left: true };
   }
 
   async updateChat(chatId: string, userId: string, dto: UpdateChatDto) {
@@ -335,7 +439,11 @@ export class ChatsService {
       : undefined;
 
     let title = chat.name;
-    if (chat.type === 'PRIVATE' && other) {
+    if (chat.type === 'GROUP') {
+      title = chat.name || 'Group';
+    } else if (chat.smsThread) {
+      title = this.contacts.formatPhoneDisplay(chat.smsThread.peerPhone);
+    } else if (chat.type === 'PRIVATE' && other) {
       title = contact?.savedName || participantPhone || 'Unknown';
     }
 
@@ -361,9 +469,12 @@ export class ChatsService {
       isOnline,
       isContact: !!contact,
       participantId: other?.userId,
-      participantPhone,
+      participantPhone: chat.smsThread
+        ? this.contacts.formatPhoneDisplay(chat.smsThread.peerPhone)
+        : participantPhone,
       contactName: contact?.savedName,
-      source: chat.telegramBridge ? 'TELEGRAM' : undefined,
+      source: chat.telegramBridge ? 'TELEGRAM' : chat.smsThread ? 'SMS' : undefined,
+      isEncrypted: !!chat.isSecret,
       members: chat.members?.map((m: any) => ({
         id: m.userId,
         displayName: m.user.profile?.displayName,

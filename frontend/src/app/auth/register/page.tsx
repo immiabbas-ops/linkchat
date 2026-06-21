@@ -19,6 +19,7 @@ function RegisterForm() {
   const [displayName, setDisplayName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const nextPath = searchParams.get('next');
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,7 +39,7 @@ function RegisterForm() {
     setLoading(true);
     try {
       await registerWithPhone(digits, displayName.trim(), DUMMY_CODE);
-      router.replace('/chats');
+      router.replace(nextPath && nextPath.startsWith('/') ? nextPath : '/chats');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed');
     } finally {

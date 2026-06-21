@@ -49,8 +49,8 @@ export class AuthController {
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Post('logout')
-  logout(@Req() req: { user: { userId: string } }) {
-    return this.auth.logout(req.user.userId);
+  logout(@Req() req: { user: { userId: string; deviceId: string } }) {
+    return this.auth.logout(req.user.userId, req.user.deviceId);
   }
 
   @ApiBearerAuth()

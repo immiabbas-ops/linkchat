@@ -12,6 +12,7 @@ import {
   Users,
   QrCode,
   Bell,
+  Radio,
 } from 'lucide-react';
 import { AuthGuard } from '@/components/auth/AuthGuard';
 import { Avatar } from '@/components/ui/Avatar';
@@ -24,6 +25,7 @@ const settingsSections = [
   {
     title: 'Account',
     items: [
+      { label: 'SIM Activation', href: '/settings/sim', icon: Radio },
       { label: 'Family', href: '/settings/family', icon: Users },
       { label: 'Devices', href: '/settings/devices', icon: Smartphone },
       { label: 'QR Login', href: '/settings/qr-login', icon: QrCode },

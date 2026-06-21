@@ -105,6 +105,11 @@ model User {
   blockedBy               BlockedUser[]    @relation("BlockedTarget")
   contacts                Contact[]        @relation("UserContacts")
   contactOf               Contact[]        @relation("ContactUsers")
+  simActivation           SimActivation?
+  smsThreadsOwned         SmsThread[]      @relation("SmsThreadOwner")
+  smsThreadsExternal      SmsThread[]      @relation("SmsThreadExternal")
+  deviceKeys              UserDeviceKey[]
+  chatKeyBundles          ChatKeyBundle[]
 
   @@index([email])
   @@map("users")
@@ -114,6 +119,7 @@ model Profile {
   id          String   @id @default(uuid())
   userId      String   @unique
   displayName String
+  username    String?  @unique
   avatarUrl   String?
   bio         String?
   phone       String?  @unique
@@ -124,6 +130,7 @@ model Profile {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([username])
   @@map("profiles")
 }
 
@@ -180,7 +187,7 @@ model Chat {
   name        String?
   avatarUrl   String?
   description String?
-  isSecret    Boolean  @default(false)
+  isSecret    Boolean  @default(true)
   disappearAfter Int?
   pinnedMessageId String?
   createdById String?
@@ -191,6 +198,8 @@ model Chat {
   messages       Message[]
   pinnedBy       PinnedChat[]
   telegramBridge TelegramBridge?
+  smsThread      SmsThread?
+  keyBundles     ChatKeyBundle[]
 
   @@map("chats")
 }
@@ -551,6 +560,7 @@ model UserSettings {
   pushEnabled           Boolean  @default(true)
   readReceipts          Boolean  @default(true)
   lastSeenVisible       Boolean  @default(true)
+  screenshotAlerts      Boolean  @default(true)
   translationEnabled    Boolean  @default(false)
   defaultTranslateLang  String?
   secretChatDefault     Int?
@@ -613,4 +623,91 @@ model TelegramBridge {
   @@unique([connectorId, externalTelegramChatId])
   @@index([ownerUserId])
   @@map("telegram_bridges")
+}
+
+enum SimActivationStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum SmsProvider {
+  DEMO
+  DEVICE
+  TWILIO
+}
+
+model SimActivation {
+  id             String              @id @default(uuid())
+  userId         String              @unique
+  phone          String              @unique
+  carrier        String?
+  status         SimActivationStatus @default(PENDING)
+  provider       SmsProvider         @default(DEMO)
+  receiveEnabled Boolean             @default(true)
+  sendEnabled    Boolean             @default(true)
+  bridgeDeviceId String?
+  verifiedAt     DateTime?
+  activatedAt    DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  smsThreads SmsThread[]
+
+  @@index([phone])
+  @@map("sim_activations")
+}
+
+model SmsThread {
+  id              String   @id @default(uuid())
+  simActivationId String
+  ownerUserId     String
+  linkchatChatId  String   @unique
+  peerPhone       String
+  externalUserId  String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  simActivation SimActivation @relation(fields: [simActivationId], references: [id], onDelete: Cascade)
+  owner         User          @relation("SmsThreadOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  chat          Chat          @relation(fields: [linkchatChatId], references: [id], onDelete: Cascade)
+  externalUser  User          @relation("SmsThreadExternal", fields: [externalUserId], references: [id], onDelete: Cascade)
+
+  @@unique([simActivationId, peerPhone])
+  @@index([ownerUserId])
+  @@map("sms_threads")
+}
+
+model UserDeviceKey {
+  id        String   @id @default(uuid())
+  userId    String
+  deviceId  String
+  publicKey String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+  @@map("user_device_keys")
+}
+
+model ChatKeyBundle {
+  id           String   @id @default(uuid())
+  chatId       String
+  userId       String
+  keyVersion   Int      @default(1)
+  wrappedKey   String
+  ephemeralKey String
+  iv           String
+  createdAt    DateTime @default(now())
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId, keyVersion])
+  @@index([chatId])
+  @@map("chat_key_bundles")
 }

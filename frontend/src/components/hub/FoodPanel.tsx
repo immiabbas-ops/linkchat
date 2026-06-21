@@ -16,6 +16,7 @@ import {
 import { api } from '@/lib/api';
 import { useGeolocation } from '@/hooks/useGeolocation';
 import { httpsRequiredMessage, isSecureBrowserContext } from '@/lib/permissions';
+import { SecureContextPrompt } from '@/components/SecureContextPrompt';
 import { formatDistance } from '@/lib/places';
 import {
   enrichPlace,
@@ -231,9 +232,9 @@ export function FoodPanel() {
             <p className="mt-1 text-xs text-[var(--text-secondary)]">
               {isSecureBrowserContext()
                 ? 'Location is required to show nearby dining options.'
-                : 'Browsers block GPS on http:// IP addresses. Use HTTPS (domain + SSL) for location, camera, and microphone.'}
+                : 'Browsers block GPS on http:// and IP addresses. Use the HTTPS link below.'}
             </p>
-            {isSecureBrowserContext() && (
+            {isSecureBrowserContext() ? (
               <button
                 type="button"
                 onClick={refreshGeo}
@@ -241,6 +242,8 @@ export function FoodPanel() {
               >
                 Enable Location
               </button>
+            ) : (
+              <SecureContextPrompt feature="location" />
             )}
           </div>
         ) : error ? (

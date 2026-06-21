@@ -105,6 +105,16 @@ body {
     color: inherit;
   }
 
+  /* Dropdown menus inside the purple header need their own text color */
+  .wa-header .chat-header-menu,
+  .wa-header .chat-header-menu button {
+    color: var(--text-primary);
+  }
+
+  .wa-header .chat-header-menu button.menu-item-danger {
+    color: var(--danger);
+  }
+
   .wa-chat-bg {
     background-color: var(--bg-primary);
     background-image:

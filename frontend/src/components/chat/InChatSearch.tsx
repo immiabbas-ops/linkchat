@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { Message } from '@/types';
 import { formatMessageTime } from '@/lib/utils';
+import { useDebouncedValue } from '@/hooks/use-debounce';
 
 interface InChatSearchProps {
   chatId: string;
@@ -17,25 +18,41 @@ interface InChatSearchProps {
 
 export function InChatSearch({ chatId, open, onClose, onJumpTo }: InChatSearchProps) {
   const [query, setQuery] = useState('');
+  const debouncedQuery = useDebouncedValue(query, 300);
   const [results, setResults] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const search = async (q: string) => {
-    setQuery(q);
-    if (!q.trim()) {
+  useEffect(() => {
+    if (!open) {
+      setQuery('');
       setResults([]);
       return;
     }
-    setLoading(true);
-    try {
-      const items = await api.get<Message[]>(`/messages/search?q=${encodeURIComponent(q)}&chatId=${chatId}`);
-      setResults(items);
-    } catch {
+  }, [open]);
+
+  useEffect(() => {
+    const q = debouncedQuery.trim();
+    if (!q) {
       setResults([]);
-    } finally {
       setLoading(false);
+      return;
     }
-  };
+    let cancelled = false;
+    setLoading(true);
+    void (async () => {
+      try {
+        const items = await api.get<Message[]>(`/messages/search?q=${encodeURIComponent(q)}&chatId=${chatId}`);
+        if (!cancelled) setResults(items);
+      } catch {
+        if (!cancelled) setResults([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedQuery, chatId]);
 
   if (typeof document === 'undefined') return null;
 
@@ -53,7 +70,7 @@ export function InChatSearch({ chatId, open, onClose, onJumpTo }: InChatSearchPr
             <input
               autoFocus
               value={query}
-              onChange={(e) => void search(e.target.value)}
+              onChange={(e) => setQuery(e.target.value)}
               placeholder="Search in chat"
               className="min-w-0 flex-1 bg-transparent py-2 text-[16px] text-white placeholder:text-white/50 focus:outline-none"
             />

@@ -61,6 +61,8 @@ export const useAuthStore = create<AuthState>()(
         });
 
         await persistSession(result);
+        const { ensureE2eeReady } = await import('@/lib/e2ee');
+        void ensureE2eeReady();
       },
 
       registerWithPhone: async (phone, displayName, code) => {
@@ -80,6 +82,8 @@ export const useAuthStore = create<AuthState>()(
         });
 
         await persistSession(result);
+        const { ensureE2eeReady } = await import('@/lib/e2ee');
+        void ensureE2eeReady();
       },
 
       logout: async () => {
@@ -109,7 +113,9 @@ export const useAuthStore = create<AuthState>()(
         try {
           const user = await api.get<User>('/users/me');
           set({ user, accessToken: token, isAuthenticated: true, isLoading: false });
-          await connectSocket(token);
+          void connectSocket(token);
+          const { ensureE2eeReady } = await import('@/lib/e2ee');
+          void ensureE2eeReady();
         } catch {
           localStorage.removeItem('linkchat_access_token');
           localStorage.removeItem('linkchat_refresh_token');

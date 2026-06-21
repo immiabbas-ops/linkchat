@@ -2,10 +2,20 @@ export interface User {
   id: string;
   email: string;
   profile?: Profile;
+  settings?: UserSettings;
+}
+
+export interface UserSettings {
+  readReceipts?: boolean;
+  lastSeenVisible?: boolean;
+  screenshotAlerts?: boolean;
+  pushEnabled?: boolean;
+  secretChatDefault?: number | null;
 }
 
 export interface Profile {
   displayName: string;
+  username?: string;
   avatarUrl?: string;
   bio?: string;
   phone?: string;
@@ -29,7 +39,8 @@ export interface Chat {
   participantPhone?: string;
   contactName?: string;
   unreadCount?: number;
-  source?: 'TELEGRAM';
+  source?: 'TELEGRAM' | 'SMS';
+  isEncrypted?: boolean;
   members?: ChatMember[];
   lastMessage?: LastMessage;
   updatedAt: string;
@@ -92,6 +103,7 @@ export interface MediaFile {
   mimeType: string;
   url: string;
   thumbnailUrl?: string;
+  fileSize?: number;
   duration?: number;
 }
 

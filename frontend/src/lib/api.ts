@@ -1,7 +1,16 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
+import { getApiUrl, getServerReachabilityHint } from '@/lib/service-urls';
+
+const REQUEST_TIMEOUT_MS = 15000;
+const UPLOAD_TIMEOUT_MS = 120000;
 
 interface RequestOptions extends RequestInit {
   token?: string;
+}
+
+function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
 class ApiClient {
@@ -22,14 +31,18 @@ class ApiClient {
       (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
     }
 
+    const apiUrl = getApiUrl();
     let response: Response;
     try {
-      response = await fetch(`${API_URL}${endpoint}`, {
+      response = await fetchWithTimeout(`${apiUrl}${endpoint}`, {
         ...fetchOptions,
         headers,
       });
-    } catch {
-      throw new Error('Cannot reach the server. Make sure the backend is running on port 4000.');
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new Error('Server is not responding. Check your connection and try again.');
+      }
+      throw new Error(getServerReachabilityHint());
     }
 
     if (response.status === 401) {
@@ -71,7 +84,7 @@ class ApiClient {
     if (!refreshToken) return false;
 
     try {
-      const data = await fetch(`${API_URL}/auth/refresh`, {
+      const data = await fetchWithTimeout(`${getApiUrl()}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refreshToken }),
@@ -113,13 +126,16 @@ class ApiClient {
 
     let response: Response;
     try {
-      response = await fetch(`${API_URL}${endpoint}`, {
+      response = await fetchWithTimeout(`${getApiUrl()}${endpoint}`, {
         method: 'POST',
         headers,
         body: formData,
-      });
-    } catch {
-      throw new Error('Cannot reach the server. Make sure the backend is running on port 4000.');
+      }, UPLOAD_TIMEOUT_MS);
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new Error('Server is not responding. Check your connection and try again.');
+      }
+      throw new Error(getServerReachabilityHint());
     }
 
     if (response.status === 401) {

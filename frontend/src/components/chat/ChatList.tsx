@@ -1,24 +1,28 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
-import { Search, MessageSquarePlus, Pin, X, MoreVertical, Archive } from 'lucide-react';
+import { Search, MessageSquarePlus, Pin, X, MoreVertical, Archive, Lock, Users } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { Avatar } from '@/components/ui/Avatar';
 import { useChatStore } from '@/store/chat-store';
-import { MIN_PHONE_SEARCH_DIGITS, useContactStore } from '@/store/contact-store';
+import { AddPeopleSheet } from '@/components/contacts/AddPeopleSheet';
 import { formatMessageTime, cn } from '@/lib/utils';
-import { formatPhoneDisplay, getPresenceLabel } from '@/lib/presence';
+import { getPresenceLabel } from '@/lib/presence';
+import { getChatDisplayTitle } from '@/lib/phone';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth-store';
 import { useConnectorStore } from '@/store/connector-store';
 import { LinkedConnectorRow } from '@/components/chat/LinkedConnectorRow';
-import { NewGroupSheet } from '@/components/chat/NewGroupSheet';
+import { NewGroupSheet, type NewGroupPayload } from '@/components/chat/NewGroupSheet';
+import { setupChatKeys, distributeChatKeys } from '@/lib/e2ee';
+import { isE2eePayload } from '@/lib/e2ee';
+import { NewSmsButton } from '@/components/sim/NewSmsButton';
+import { useSimStore } from '@/store/sim-store';
 import type { Chat } from '@/types';
-
-type NewChatTab = 'number' | 'contacts';
+import { sortChats } from '@/lib/chat-sort';
+import { ConnectionBanner } from './ConnectionBanner';
 
 function ChatListItem({
   chat,
@@ -38,13 +42,17 @@ function ChatListItem({
     ? presence
     : chat.lastMessage?.type === 'IMAGE'
       ? '📷 Photo'
-      : chat.lastMessage?.type === 'VOICE'
+      : chat.lastMessage?.type === 'VIDEO'
+        ? '🎬 Video'
+        : chat.lastMessage?.type === 'VOICE'
         ? '🎤 Voice message'
         : chat.lastMessage?.type === 'LOCATION'
           ? '📍 Location'
           : chat.lastMessage?.type === 'DOCUMENT'
             ? '📄 Document'
-            : chat.lastMessage?.content || 'No messages yet';
+            : isE2eePayload(chat.lastMessage?.content)
+              ? '🔒 Message'
+              : chat.lastMessage?.content || 'No messages yet';
 
   return (
     <Link href={`/chats/${chat.id}`}>
@@ -56,10 +64,21 @@ function ChatListItem({
         <div className="flex min-w-0 flex-1 flex-col justify-center">
           <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1.5">
+              {chat.type === 'GROUP' && (
+                <Users className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
+              )}
+              {chat.isEncrypted && chat.source !== 'SMS' && chat.source !== 'TELEGRAM' && (
+                <Lock className="h-3 w-3 shrink-0 text-[var(--text-secondary)]" />
+              )}
               {chat.isPinned && <Pin className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />}
               {chat.source === 'TELEGRAM' && (
                 <span className="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-sky-700">
                   TG
+                </span>
+              )}
+              {chat.source === 'SMS' && (
+                <span className="shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">
+                  SMS
                 </span>
               )}
               <h3
@@ -68,7 +87,7 @@ function ChatListItem({
                   unread > 0 ? 'font-semibold md:font-normal' : 'font-normal',
                 )}
               >
-                {chat.title}
+                {getChatDisplayTitle(chat)}
               </h3>
             </div>
             <div className="flex shrink-0 flex-col items-end gap-1">
@@ -85,7 +104,7 @@ function ChatListItem({
                 </span>
               )}
               {unread > 0 && (
-                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white md:hidden">
+                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">
                   {unread > 99 ? '99+' : unread}
                 </span>
               )}
@@ -119,60 +138,32 @@ const menuItems = [
   { label: 'Settings', href: '/settings' },
 ];
 
-export function ChatList() {
+export function ChatList({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { user } = useAuthStore();
   const { chats, fetchChats, isLoadingChats, typingUsers, recordingUsers, upsertChat } = useChatStore();
   const { connectors, fetchConnectors } = useConnectorStore();
-  const { contacts, fetchContacts } = useContactStore();
+  const { activated: simActive, fetchStatus: fetchSimStatus } = useSimStore();
   const [search, setSearch] = useState('');
   const [showNewChat, setShowNewChat] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
-  const [newChatTab, setNewChatTab] = useState<NewChatTab>('number');
-  const [contactQuery, setContactQuery] = useState('');
   const [showMenu, setShowMenu] = useState(false);
-  const [phoneQuery, setPhoneQuery] = useState('');
-  const [users, setUsers] = useState<
-    { id: string; profile?: { displayName?: string; phone?: string } }[]
-  >([]);
-  const [searchError, setSearchError] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [portalReady, setPortalReady] = useState(false);
+  const [filterUnread, setFilterUnread] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => setPortalReady(true), []);
-
-  useEffect(() => {
-    if (!showNewChat) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [showNewChat]);
 
   useEffect(() => {
     fetchChats();
     fetchConnectors();
-    void fetchContacts();
-  }, [fetchChats, fetchConnectors, fetchContacts]);
+    void fetchSimStatus();
+  }, [fetchChats, fetchConnectors, fetchSimStatus]);
 
   const filteredConnectors = connectors.filter((c) => {
     if (c.type === 'TELEGRAM' && c.config?.live) return false;
     const q = search.toLowerCase();
     return c.label.toLowerCase().includes(q) || c.identifier.toLowerCase().includes(q);
   });
-
-  useEffect(() => {
-    if (!showNewChat) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setShowNewChat(false);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [showNewChat]);
 
   useEffect(() => {
     if (!showMenu) return;
@@ -186,8 +177,10 @@ export function ChatList() {
   }, [showMenu]);
 
   const filtered = chats.filter((c) => c.title.toLowerCase().includes(search.toLowerCase()));
-  const activeChats = filtered.filter((c) => !c.isArchived);
-  const archivedChats = filtered.filter((c) => c.isArchived);
+  const sorted = sortChats(filtered);
+  const unreadFiltered = filterUnread ? sorted.filter((c) => (c.unreadCount || 0) > 0) : sorted;
+  const activeChats = unreadFiltered.filter((c) => !c.isArchived);
+  const archivedChats = unreadFiltered.filter((c) => c.isArchived);
 
   const unarchiveChat = async (chatId: string, e: React.MouseEvent) => {
     e.preventDefault();
@@ -196,51 +189,8 @@ export function ChatList() {
     fetchChats();
   };
 
-  const searchUsers = async (digits: string) => {
-    setSearchError('');
-    setIsSearching(true);
-    try {
-      const result = await api.get<
-        { id: string; profile?: { displayName?: string; phone?: string } }[]
-      >(`/users/search?q=${encodeURIComponent(digits)}`);
-      setUsers(result);
-      if (result.length === 0) {
-        setSearchError('No user found with this mobile number');
-      }
-    } catch {
-      setUsers([]);
-      setSearchError('Search failed. Try again.');
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
-  const onPhoneQueryChange = (q: string) => {
-    setPhoneQuery(q);
-    setSearchError('');
-    setUsers([]);
-
-    const digits = q.replace(/\D/g, '');
-    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
-
-    if (digits.length < MIN_PHONE_SEARCH_DIGITS) {
-      setIsSearching(false);
-      return;
-    }
-
-    setIsSearching(true);
-    searchTimeoutRef.current = setTimeout(() => {
-      void searchUsers(digits);
-    }, 350);
-  };
-
-  const startChat = async (participantId: string) => {
-    const chat = await api.post<Chat>('/chats/private', { participantId });
+  const handleChatReady = (chat: Chat) => {
     upsertChat(chat);
-    setShowNewChat(false);
-    setPhoneQuery('');
-    setUsers([]);
-    setSearchError('');
     router.push(`/chats/${chat.id}`);
   };
 
@@ -250,25 +200,46 @@ export function ChatList() {
     if (action === 'new-group') setShowNewGroup(true);
   };
 
-  const createGroup = async (name: string, participantIds: string[]) => {
-    const chat = await api.post<Chat>('/chats/group', { name, participantIds });
-    upsertChat(chat);
-    await fetchChats();
-    router.push(`/chats/${chat.id}`);
+  const createGroup = async (payload: NewGroupPayload) => {
+    try {
+      const body: {
+        name: string;
+        participantIds?: string[];
+        participantPhones?: string[];
+        description?: string;
+      } = { name: payload.name };
+      if (payload.participantIds.length) body.participantIds = payload.participantIds;
+      if (payload.participantPhones.length) body.participantPhones = payload.participantPhones;
+      if (payload.description) body.description = payload.description;
+
+      const chat = await api.post<Chat>('/chats/group', body);
+      upsertChat(chat);
+      const userId = user?.id;
+      if (userId && chat.isEncrypted && chat.members?.length) {
+        const memberIds = chat.members.map((m) => m.id);
+        await setupChatKeys(chat.id, memberIds, userId);
+        await distributeChatKeys(
+          chat.id,
+          memberIds.filter((id) => id !== userId),
+          userId,
+        );
+      }
+      await fetchChats();
+      router.push(`/chats/${chat.id}`);
+    } catch (err) {
+      console.error('Failed to create group', err);
+      alert('Could not create group. Check participants and try again.');
+    }
   };
 
-  const filteredContacts = contacts.filter(
-    (c) =>
-      c.savedName.toLowerCase().includes(contactQuery.toLowerCase()) ||
-      c.phone.includes(contactQuery.replace(/\D/g, '')),
-  );
-
   return (
-    <div className="relative flex h-full flex-col bg-[var(--list-bg)]">
+    <div className="relative flex h-full flex-col overflow-hidden bg-[var(--list-bg)]">
       <header className="safe-top bg-[var(--list-bg)]">
         <div className="flex items-center justify-between px-4 pb-2 pt-3">
           <h1 className="text-[22px] font-semibold text-[var(--accent-dark)]">LinkChat</h1>
-          <div className="relative" ref={menuRef}>
+          <div className="flex items-center gap-2">
+            {simActive && <NewSmsButton />}
+            <div className="relative" ref={menuRef}>
             <button
               type="button"
               onClick={(e) => {
@@ -306,6 +277,7 @@ export function ChatList() {
                 )}
               </div>
             )}
+            </div>
           </div>
         </div>
 
@@ -328,8 +300,24 @@ export function ChatList() {
               </button>
             )}
           </div>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={() => setFilterUnread((v) => !v)}
+              className={cn(
+                'rounded-full px-3 py-1 text-[13px] font-medium transition-colors',
+                filterUnread
+                  ? 'bg-[var(--accent)] text-white'
+                  : 'bg-[var(--search-bg)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
+              )}
+            >
+              Unread
+            </button>
+          </div>
         </div>
       </header>
+
+      <ConnectionBanner />
 
       <div className="flex-1 overflow-y-auto scrollbar-hide">
         {isLoadingChats ? (
@@ -408,141 +396,22 @@ export function ChatList() {
         )}
       </div>
 
-      <button
-        type="button"
-        onClick={() => setShowNewChat(true)}
-        className="wa-fab fixed bottom-[88px] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-2xl md:bottom-6"
-        aria-label="New chat"
-      >
-        <MessageSquarePlus className="h-6 w-6" />
-      </button>
+      {!embedded && !pathname.match(/\/chats\/[^/]+$/) && (
+        <button
+          type="button"
+          onClick={() => setShowNewChat(true)}
+          className="wa-fab absolute bottom-6 left-1/2 z-10 flex h-14 w-14 -translate-x-1/2 items-center justify-center rounded-full"
+          aria-label="New chat"
+        >
+          <MessageSquarePlus className="h-6 w-6" />
+        </button>
+      )}
 
-      {portalReady &&
-        showNewChat &&
-        createPortal(
-          <div
-            className="fixed inset-0 z-[200] flex items-end justify-center bg-black/55 sm:items-center sm:p-4"
-            onClick={() => setShowNewChat(false)}
-            role="presentation"
-          >
-            <motion.div
-              initial={{ y: '100%', opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: '100%', opacity: 0 }}
-              transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-              onClick={(e) => e.stopPropagation()}
-              className="flex max-h-[min(92dvh,640px)] w-full max-w-md flex-col overflow-hidden rounded-t-2xl bg-[var(--list-bg)] shadow-2xl sm:rounded-2xl"
-            >
-              <div className="flex items-center justify-between border-b border-[var(--border-glass)] px-5 py-4">
-                <h3 className="text-lg font-semibold text-[var(--text-primary)]">New chat</h3>
-                <button
-                  type="button"
-                  onClick={() => setShowNewChat(false)}
-                  className="rounded-full p-2 text-[var(--text-secondary)] hover:bg-black/[0.05]"
-                  aria-label="Close"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-
-              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-4 safe-bottom">
-                <div className="mb-4 flex gap-1 rounded-xl bg-[var(--search-bg)] p-1">
-                  {(['number', 'contacts'] as const).map((tab) => (
-                    <button
-                      key={tab}
-                      type="button"
-                      onClick={() => setNewChatTab(tab)}
-                      className={`flex-1 rounded-lg py-2 text-sm font-medium ${
-                        newChatTab === tab
-                          ? 'bg-[var(--list-bg)] text-[var(--text-primary)] shadow-sm'
-                          : 'text-[var(--text-secondary)]'
-                      }`}
-                    >
-                      {tab === 'number' ? 'By number' : 'Contacts'}
-                    </button>
-                  ))}
-                </div>
-
-                {newChatTab === 'number' ? (
-                  <>
-                <label htmlFor="new-chat-phone" className="mb-2 block text-sm font-medium text-[var(--text-primary)]">
-                  Search by mobile number
-                </label>
-                <input
-                  id="new-chat-phone"
-                  value={phoneQuery}
-                  onChange={(e) => onPhoneQueryChange(e.target.value)}
-                  placeholder="Enter full mobile number"
-                  inputMode="tel"
-                  autoFocus
-                  className="mb-1 w-full rounded-xl border border-[var(--border-glass)] bg-[var(--search-bg)] px-4 py-3 text-[15px] text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
-                />
-                <p className="mb-3 text-xs text-[var(--text-secondary)]">
-                  Enter the complete number ({MIN_PHONE_SEARCH_DIGITS}+ digits). Partial numbers are not searched.
-                </p>
-                {isSearching && (
-                  <p className="mb-3 text-sm text-[var(--text-secondary)]">Searching…</p>
-                )}
-                {searchError && (
-                  <p className="mb-3 text-sm text-[var(--text-secondary)]">{searchError}</p>
-                )}
-                <div className="min-h-[120px] flex-1 space-y-1">
-                  {users.map((u) => {
-                    const phone = formatPhoneDisplay(u.profile?.phone);
-                    return (
-                    <button
-                      key={u.id}
-                      type="button"
-                      onClick={() => startChat(u.id)}
-                      className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left hover:bg-black/[0.04]"
-                    >
-                      <Avatar name={phone} size="md" />
-                      <div className="min-w-0">
-                        <p className="font-medium text-[var(--text-primary)]">{phone}</p>
-                        <p className="text-xs text-[var(--text-secondary)]">Tap to open chat</p>
-                      </div>
-                    </button>
-                    );
-                  })}
-                </div>
-                  </>
-                ) : (
-                  <>
-                    <input
-                      value={contactQuery}
-                      onChange={(e) => setContactQuery(e.target.value)}
-                      placeholder="Search saved contacts"
-                      className="mb-3 w-full rounded-xl border border-[var(--border-glass)] bg-[var(--search-bg)] px-4 py-3 text-[15px] focus:outline-none"
-                    />
-                    <div className="min-h-[120px] flex-1 space-y-1">
-                      {filteredContacts.length === 0 ? (
-                        <p className="py-6 text-center text-sm text-[var(--text-secondary)]">
-                          {contacts.length === 0 ? 'No saved contacts yet' : 'No matches'}
-                        </p>
-                      ) : (
-                        filteredContacts.map((c) => (
-                          <button
-                            key={c.contactUserId}
-                            type="button"
-                            onClick={() => startChat(c.contactUserId)}
-                            className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left hover:bg-black/[0.04]"
-                          >
-                            <Avatar name={c.savedName} size="md" />
-                            <div className="min-w-0">
-                              <p className="font-medium text-[var(--text-primary)]">{c.savedName}</p>
-                              <p className="text-xs text-[var(--text-secondary)]">{formatPhoneDisplay(c.phone)}</p>
-                            </div>
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-            </motion.div>
-          </div>,
-          document.body,
-        )}
+      <AddPeopleSheet
+        open={showNewChat}
+        onClose={() => setShowNewChat(false)}
+        onChatReady={handleChatReady}
+      />
 
       <NewGroupSheet open={showNewGroup} onClose={() => setShowNewGroup(false)} onCreate={createGroup} />
     </div>

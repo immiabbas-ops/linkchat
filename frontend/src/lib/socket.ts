@@ -1,19 +1,7 @@
 'use client';
 
 import type { Message } from '@/types';
-
-function resolveSocketUrl(): string {
-  const configured = process.env.NEXT_PUBLIC_SOCKET_URL?.trim();
-  if (configured) {
-    const normalized = configured.replace(/\/$/, '');
-    return normalized.endsWith('/chat') ? normalized : `${normalized}/chat`;
-  }
-
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
-  return `${apiUrl.replace(/\/api\/v1\/?$/, '')}/chat`;
-}
-
-const SOCKET_URL = resolveSocketUrl();
+import { getSocketUrl } from '@/lib/service-urls';
 
 function isMessage(value: unknown): value is Message {
   if (!value || typeof value !== 'object') return false;
@@ -26,37 +14,75 @@ type IoSocket = {
   on: (event: string, handler: (...args: unknown[]) => void) => void;
   emit: (event: string, ...args: unknown[]) => void;
   disconnect: () => void;
+  connect?: () => void;
+  auth?: Record<string, unknown>;
 };
+
+export type ConnectionState = 'connected' | 'disconnected' | 'reconnecting';
 
 class SocketService {
   private socket: IoSocket | null = null;
   private listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+  private connectionListeners = new Set<(state: ConnectionState) => void>();
+  private connectionState: ConnectionState = 'disconnected';
+
+  private setConnectionState(state: ConnectionState) {
+    this.connectionState = state;
+    this.connectionListeners.forEach((cb) => cb(state));
+  }
+
+  onConnectionChange(callback: (state: ConnectionState) => void) {
+    this.connectionListeners.add(callback);
+    callback(this.connectionState);
+    return () => {
+      this.connectionListeners.delete(callback);
+    };
+  }
 
   async connect(token: string) {
-    if (this.socket?.connected) return this.socket;
+    if (this.socket?.connected) {
+      this.socket.auth = { token };
+      return this.socket;
+    }
+
+    if (this.socket) {
+      this.socket.auth = { token };
+      if (!this.socket.connected) {
+        this.socket.connect?.();
+      }
+      return this.socket;
+    }
 
     const { io } = await import('socket.io-client');
-    this.socket = io(SOCKET_URL, {
+    this.socket = io(getSocketUrl(), {
       auth: { token },
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
-    }) as IoSocket;
+    }) as unknown as IoSocket;
+
+    this.setConnectionState('reconnecting');
 
     this.socket.on('connect', () => {
-      console.log('[Socket] Connected');
+      this.setConnectionState('connected');
       void import('@/store/chat-store').then(({ useChatStore }) => {
-        useChatStore.getState().fetchChats();
+        void useChatStore.getState().onReconnect();
       });
     });
 
     this.socket.on('disconnect', () => {
-      console.log('[Socket] Disconnected');
+      this.setConnectionState('disconnected');
     });
+
+    (this.socket as IoSocket & { io?: { on: (e: string, h: () => void) => void } }).io?.on(
+      'reconnect_attempt',
+      () => this.setConnectionState('reconnecting'),
+    );
 
     const events = [
       'message:new',
+      'message:delivered',
       'message:read',
       'message:edit',
       'message:delete',
@@ -64,6 +90,7 @@ class SocketService {
       'user:typing',
       'user:recording',
       'user:online',
+      'user:screenshot',
     ];
 
     events.forEach((event) => {
@@ -78,6 +105,7 @@ class SocketService {
   disconnect() {
     this.socket?.disconnect();
     this.socket = null;
+    this.setConnectionState('disconnected');
   }
 
   on(event: string, callback: (...args: unknown[]) => void) {
@@ -147,6 +175,11 @@ class SocketService {
     this.socket?.emit('message:read', { chatId, messageId });
   }
 
+  acknowledgeDelivery(chatId: string, messageIds: string[]) {
+    if (!this.socket?.connected || !messageIds.length) return;
+    this.socket.emit('message:delivered', { chatId, messageIds });
+  }
+
   setTyping(chatId: string, isTyping: boolean) {
     this.socket?.emit('user:typing', { chatId, isTyping });
   }
@@ -165,6 +198,10 @@ class SocketService {
 
   reactToMessage(messageId: string, emoji: string, chatId: string) {
     this.socket?.emit('message:react', { messageId, emoji, chatId });
+  }
+
+  reportScreenshot(chatId: string) {
+    this.socket?.emit('chat:screenshot', { chatId });
   }
 
   isConnected() {

@@ -3,15 +3,40 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Camera, Check, Plus, RotateCcw, Stamp, Trash2, X } from 'lucide-react';
 import {
-  applySignedStamp,
-  blobToFile,
-  combineDocumentPages,
-  enhanceDocumentImage,
-} from '@/lib/document-utils';
+  Camera,
+  Copy,
+  PenLine,
+  Plus,
+  RotateCcw,
+  Send,
+  Settings2,
+  Trash2,
+  X,
+} from 'lucide-react';
+import {
+  type EnhancementMode,
+  type Point,
+  type ScanPageData,
+  type SignaturePlacement,
+  applyEnhancement,
+  buildDocumentFilename,
+  captureVideoFrame,
+  createPdfFromPages,
+  detectDocumentCorners,
+  drawEdgeOverlay,
+  exportPageToPng,
+  fallbackCorners,
+  finalizePageForExport,
+  loadSavedSignatures,
+  processScanFrame,
+  saveSignature,
+  validateExport,
+} from '@/lib/document-scan';
 import { cameraErrorMessage, isSecureBrowserContext } from '@/lib/permissions';
-import { useAuthStore } from '@/store/auth-store';
+import { SignaturePad } from './scanner/SignaturePad';
+import { DocumentShareSheet, type ShareAction } from './scanner/DocumentShareSheet';
+import { ProcessingOverlay } from './scanner/ProcessingOverlay';
 
 interface DocumentScannerProps {
   open: boolean;
@@ -19,28 +44,70 @@ interface DocumentScannerProps {
   onSend: (file: File, meta: { signed: boolean; scanned: boolean; pageCount: number }) => Promise<void>;
 }
 
-type ScanPage = { blob: Blob; url: string };
+const ENHANCEMENT_MODES: { id: EnhancementMode; label: string }[] = [
+  { id: 'auto', label: 'Auto' },
+  { id: 'white', label: 'White doc' },
+  { id: 'color', label: 'Color' },
+  { id: 'original', label: 'Original' },
+  { id: 'bw', label: 'B&W' },
+];
+
+function newPageId() {
+  return `page_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
 
 export function DocumentScanner({ open, onClose, onSend }: DocumentScannerProps) {
-  const { user } = useAuthStore();
   const videoRef = useRef<HTMLVideoElement>(null);
+  const overlayRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const detectTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const liveCorners = useRef<Point[] | null>(null);
+
   const [mounted, setMounted] = useState(false);
   const [error, setError] = useState('');
-  const [pages, setPages] = useState<ScanPage[]>([]);
+  const [pages, setPages] = useState<ScanPageData[]>([]);
+  const [activePageIndex, setActivePageIndex] = useState(0);
   const [reviewMode, setReviewMode] = useState(false);
-  const [signedPreviewUrl, setSignedPreviewUrl] = useState<string | null>(null);
-  const [addStamp, setAddStamp] = useState(false);
+  const [enhancement, setEnhancement] = useState<EnhancementMode>('auto');
   const [processing, setProcessing] = useState(false);
+  const [processLabel, setProcessLabel] = useState('');
+  const [processProgress, setProcessProgress] = useState<number | undefined>();
+  const [showEnhance, setShowEnhance] = useState(false);
+  const [showSignaturePad, setShowSignaturePad] = useState(false);
+  const [showShare, setShowShare] = useState(false);
+  const [exportFile, setExportFile] = useState<File | null>(null);
+  const [qualityIssues, setQualityIssues] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
 
-  const signerName = user?.profile?.displayName || user?.email?.split('@')[0] || 'User';
+  const activePage = pages[activePageIndex];
 
   useEffect(() => setMounted(true), []);
 
   const stopCamera = useCallback(() => {
+    if (detectTimer.current) {
+      clearInterval(detectTimer.current);
+      detectTimer.current = null;
+    }
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+  }, []);
+
+  const runLiveDetection = useCallback(() => {
+    const video = videoRef.current;
+    const overlay = overlayRef.current;
+    if (!video?.videoWidth || !overlay) return;
+
+    const frame = captureVideoFrame(video);
+    const corners = detectDocumentCorners(frame) ?? fallbackCorners(frame.width, frame.height);
+    liveCorners.current = corners;
+
+    overlay.width = video.clientWidth;
+    overlay.height = video.clientHeight;
+    const ctx = overlay.getContext('2d')!;
+    const sx = overlay.width / frame.width;
+    const sy = overlay.height / frame.height;
+    const scaled = corners.map((p) => ({ x: p.x * sx, y: p.y * sy }));
+    drawEdgeOverlay(ctx, scaled, overlay.width, overlay.height);
   }, []);
 
   const startCamera = useCallback(async () => {
@@ -60,51 +127,65 @@ export function DocumentScanner({ open, onClose, onSend }: DocumentScannerProps)
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
+      detectTimer.current = setInterval(runLiveDetection, 450);
     } catch {
       setError(cameraErrorMessage());
     }
-  }, [stopCamera]);
+  }, [runLiveDetection, stopCamera]);
+
+  const resetState = useCallback(() => {
+    setPages((prev) => {
+      prev.forEach((p) => URL.revokeObjectURL(p.url));
+      return [];
+    });
+    setActivePageIndex(0);
+    setReviewMode(false);
+    setEnhancement('auto');
+    setShowEnhance(false);
+    setShowSignaturePad(false);
+    setShowShare(false);
+    setExportFile(null);
+    setQualityIssues([]);
+    setError('');
+  }, []);
 
   useEffect(() => {
     if (!open) {
       stopCamera();
-      setPages((prev) => {
-        prev.forEach((p) => URL.revokeObjectURL(p.url));
-        return [];
-      });
-      setSignedPreviewUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return null;
-      });
-      setAddStamp(false);
-      setReviewMode(false);
+      resetState();
       return;
     }
     void startCamera();
     return () => stopCamera();
-  }, [open, startCamera, stopCamera]);
+  }, [open, startCamera, stopCamera, resetState]);
 
   const capture = async () => {
     const video = videoRef.current;
-    if (!video || !video.videoWidth) return;
+    if (!video?.videoWidth) return;
     setProcessing(true);
+    setProcessLabel('Detecting edges…');
     setError('');
     try {
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d')!;
-      ctx.drawImage(video, 0, 0);
-      const rawBlob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Capture failed'))), 'image/jpeg', 0.95);
-      });
-      const enhanced = await enhanceDocumentImage(rawBlob);
-      const url = URL.createObjectURL(enhanced);
-      setPages((prev) => [...prev, { blob: enhanced, url }]);
+      const frame = captureVideoFrame(video);
+      const corners = liveCorners.current ?? detectDocumentCorners(frame) ?? fallbackCorners(frame.width, frame.height);
+      setProcessLabel('Correcting perspective…');
+      const blob = await processScanFrame(frame, enhancement, corners);
+      const url = URL.createObjectURL(blob);
+      const page: ScanPageData = {
+        id: newPageId(),
+        blob,
+        url,
+        corners,
+        enhancement,
+        signatures: [],
+      };
+      setPages((prev) => [...prev, page]);
+      setActivePageIndex(pages.length);
     } catch {
-      setError('Could not capture image. Try again.');
+      setError('Could not capture. Hold steady and try again.');
     } finally {
       setProcessing(false);
+      setProcessLabel('');
     }
   };
 
@@ -115,63 +196,188 @@ export function DocumentScanner({ open, onClose, onSend }: DocumentScannerProps)
       next.splice(index, 1);
       return next;
     });
-    if (signedPreviewUrl) {
-      URL.revokeObjectURL(signedPreviewUrl);
-      setSignedPreviewUrl(null);
-    }
+    setActivePageIndex((i) => Math.max(0, Math.min(i, pages.length - 2)));
   };
 
-  const openReview = async () => {
-    if (pages.length === 0) return;
-    stopCamera();
-    setReviewMode(true);
+  const duplicatePage = (index: number) => {
+    setPages((prev) => {
+      const src = prev[index];
+      const url = URL.createObjectURL(src.blob);
+      const copy: ScanPageData = {
+        ...src,
+        id: newPageId(),
+        url,
+        signatures: src.signatures.map((s) => ({ ...s })),
+      };
+      const next = [...prev];
+      next.splice(index + 1, 0, copy);
+      return next;
+    });
   };
 
-  const toggleStamp = async (enabled: boolean) => {
-    setAddStamp(enabled);
-    if (signedPreviewUrl) {
-      URL.revokeObjectURL(signedPreviewUrl);
-      setSignedPreviewUrl(null);
-    }
-    if (!enabled || pages.length === 0) return;
+  const movePage = (index: number, dir: -1 | 1) => {
+    const target = index + dir;
+    if (target < 0 || target >= pages.length) return;
+    setPages((prev) => {
+      const next = [...prev];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+    setActivePageIndex(target);
+  };
+
+  const updatePageEnhancement = async (mode: EnhancementMode) => {
+    if (!activePage) return;
+    setEnhancement(mode);
     setProcessing(true);
+    setProcessLabel('Enhancing…');
     try {
-      const combined = await combineDocumentPages(pages.map((p) => p.blob));
-      const stamped = await applySignedStamp(combined, signerName);
-      setSignedPreviewUrl(URL.createObjectURL(stamped));
-    } catch {
-      setError('Could not apply stamp.');
-      setAddStamp(false);
+      const blob = await applyEnhancement(activePage.blob, mode);
+      const url = URL.createObjectURL(blob);
+      setPages((prev) =>
+        prev.map((p, i) => {
+          if (i !== activePageIndex) return p;
+          URL.revokeObjectURL(p.url);
+          return { ...p, blob, url, enhancement: mode };
+        }),
+      );
     } finally {
+      setProcessing(false);
+      setProcessLabel('');
+    }
+  };
+
+  const addSignatureToPage = (dataUrl: string, sigName: string) => {
+    const saved = saveSignature(sigName, dataUrl);
+    const placement: SignaturePlacement = {
+      signatureId: saved.id,
+      dataUrl: saved.dataUrl,
+      x: 0.72,
+      y: 0.82,
+      scale: 1,
+      rotation: -0.08,
+    };
+    setPages((prev) =>
+      prev.map((p, i) =>
+        i === activePageIndex ? { ...p, signatures: [...p.signatures, placement] } : p,
+      ),
+    );
+    setShowSignaturePad(false);
+  };
+
+  const prepareExport = async (): Promise<File> => {
+    setProcessing(true);
+    setProcessLabel('Exporting A4 pages…');
+    setProcessProgress(10);
+    const a4Pages: Blob[] = [];
+    for (let i = 0; i < pages.length; i++) {
+      setProcessProgress(10 + Math.round((i / pages.length) * 70));
+      a4Pages.push(await finalizePageForExport(pages[i]));
+    }
+    setProcessLabel('Creating PDF…');
+    setProcessProgress(85);
+    const pdfBlob = await createPdfFromPages(a4Pages);
+    const filename = buildDocumentFilename('pdf');
+    const file = new File([pdfBlob], filename, { type: 'application/pdf' });
+
+    setProcessLabel('Quality check…');
+    setProcessProgress(95);
+    const report = await validateExport(
+      a4Pages[0],
+      pages.some((p) => p.signatures.length > 0),
+    );
+    setQualityIssues(report.issues);
+    setProcessProgress(100);
+    setProcessing(false);
+    return file;
+  };
+
+  const openShare = async () => {
+    if (pages.length === 0) return;
+    setError('');
+    try {
+      const file = await prepareExport();
+      setExportFile(file);
+      setShowShare(true);
+    } catch {
+      setError('Export failed. Try again.');
       setProcessing(false);
     }
   };
 
-  const backToCamera = () => {
-    setReviewMode(false);
-    if (signedPreviewUrl) {
-      URL.revokeObjectURL(signedPreviewUrl);
-      setSignedPreviewUrl(null);
+  const handleShareAction = async (action: ShareAction) => {
+    if (!exportFile) return;
+    const hasSig = pages.some((p) => p.signatures.length > 0);
+
+    if (action === 'send') {
+      setSending(true);
+      try {
+        await onSend(exportFile, { signed: hasSig, scanned: true, pageCount: pages.length });
+        setShowShare(false);
+        onClose();
+      } catch {
+        setError('Could not send document.');
+      } finally {
+        setSending(false);
+      }
+      return;
     }
-    setAddStamp(false);
-    void startCamera();
+
+    if (action === 'download') {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(exportFile);
+      a.download = exportFile.name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      return;
+    }
+
+    if (action === 'share' && navigator.share) {
+      try {
+        await navigator.share({
+          title: exportFile.name,
+          files: [exportFile],
+        });
+      } catch {
+        /* user cancelled */
+      }
+      return;
+    }
+
+    if (action === 'whatsapp') {
+      const a4 = await finalizePageForExport(pages[0]);
+      const jpg = await exportPageToPng(a4);
+      const f = new File([jpg], buildDocumentFilename('jpg'), { type: 'image/jpeg' });
+      if (navigator.share) {
+        await navigator.share({ files: [f], text: 'Scanned document from LinkChat' });
+      } else {
+        window.open(`https://wa.me/?text=${encodeURIComponent('Document from LinkChat')}`, '_blank');
+      }
+      return;
+    }
+
+    if (action === 'email') {
+      const subject = encodeURIComponent(exportFile.name);
+      const body = encodeURIComponent('Please find the scanned document attached (download from LinkChat).');
+      window.location.href = `mailto:?subject=${subject}&body=${body}`;
+      return;
+    }
+
+    if (action === 'copy') {
+      await navigator.clipboard.writeText(exportFile.name);
+    }
   };
 
-  const send = async () => {
+  const openReview = () => {
     if (pages.length === 0) return;
-    setSending(true);
-    setError('');
-    try {
-      let combined = await combineDocumentPages(pages.map((p) => p.blob));
-      if (addStamp) combined = await applySignedStamp(combined, signerName);
-      const file = blobToFile(combined, `scan-${Date.now()}.jpg`);
-      await onSend(file, { signed: addStamp, scanned: true, pageCount: pages.length });
-      onClose();
-    } catch {
-      setError('Could not send document.');
-    } finally {
-      setSending(false);
-    }
+    stopCamera();
+    setReviewMode(true);
+    setActivePageIndex(0);
+  };
+
+  const backToCamera = () => {
+    setReviewMode(false);
+    void startCamera();
   };
 
   if (!mounted) return null;
@@ -185,73 +391,162 @@ export function DocumentScanner({ open, onClose, onSend }: DocumentScannerProps)
               <X className="h-6 w-6" />
             </button>
             <h2 className="text-[16px] font-medium text-white">
-              {reviewMode ? `Review (${pages.length} page${pages.length === 1 ? '' : 's'})` : 'Document scanner'}
+              {reviewMode ? `Edit (${pages.length} pg)` : 'Document scanner'}
             </h2>
-            <div className="w-10" />
+            {reviewMode ? (
+              <button type="button" onClick={() => setShowEnhance((v) => !v)} className="rounded-full p-2 text-white hover:bg-white/10">
+                <Settings2 className="h-5 w-5" />
+              </button>
+            ) : (
+              <div className="w-10" />
+            )}
           </header>
 
           <div className="relative flex flex-1 flex-col overflow-hidden">
             {!reviewMode ? (
               <>
                 <video ref={videoRef} playsInline muted className="h-full w-full flex-1 object-cover" />
-                <div className="pointer-events-none absolute inset-8 rounded-lg border-2 border-dashed border-white/70" />
+                <canvas ref={overlayRef} className="pointer-events-none absolute inset-0 h-full w-full" />
+                <p className="pointer-events-none absolute left-0 right-0 top-4 px-6 text-center text-xs text-emerald-300">
+                  Align document — edges detected automatically
+                </p>
                 {pages.length > 0 && (
                   <div className="absolute bottom-28 left-0 right-0 flex gap-2 overflow-x-auto px-4 pb-2">
                     {pages.map((p, i) => (
-                      <div key={p.url} className="relative shrink-0">
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => removePage(i)}
+                        className="relative shrink-0"
+                      >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={p.url} alt={`Page ${i + 1}`} className="h-16 w-12 rounded border border-white/40 object-cover" />
-                        <button
-                          type="button"
-                          onClick={() => removePage(i)}
-                          className="absolute -right-1 -top-1 rounded-full bg-red-500 p-0.5 text-white"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
+                        <img src={p.url} alt={`Page ${i + 1}`} className="h-16 w-12 rounded border-2 border-white/50 object-cover" />
+                        <span className="absolute bottom-0.5 left-0.5 rounded bg-black/60 px-1 text-[9px] text-white">{i + 1}</span>
+                      </button>
                     ))}
                   </div>
                 )}
-                <p className="absolute bottom-36 left-0 right-0 px-6 text-center text-sm text-white/80">
-                  {pages.length === 0
-                    ? 'Align the document, then capture. Add more pages before sending.'
-                    : `${pages.length} page${pages.length === 1 ? '' : 's'} captured — add more or continue`}
-                </p>
               </>
             ) : (
               <div className="flex h-full flex-col bg-[#111]">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={addStamp && signedPreviewUrl ? signedPreviewUrl : pages[0]?.url}
-                  alt="Preview"
-                  className="max-h-[55vh] w-full object-contain"
-                />
-                <div className="flex gap-2 overflow-x-auto px-4 py-2">
-                  {pages.map((p, i) => (
+                <div className="relative flex-1 overflow-hidden">
+                  {activePage && (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img key={p.url} src={p.url} alt={`Page ${i + 1}`} className="h-14 w-10 shrink-0 rounded object-cover opacity-80" />
+                    <img src={activePage.url} alt="Page preview" className="h-full w-full object-contain" />
+                  )}
+                  {activePage?.signatures.map((sig, si) => (
+                    <div
+                      key={`${sig.signatureId}-${si}`}
+                      className="pointer-events-none absolute"
+                      style={{
+                        left: `${sig.x * 100}%`,
+                        top: `${sig.y * 100}%`,
+                        transform: `translate(-50%, -50%) rotate(${sig.rotation}rad) scale(${sig.scale})`,
+                        width: '22%',
+                      }}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={sig.dataUrl} alt="Signature" className="w-full" />
+                    </div>
                   ))}
                 </div>
-                <div className="px-5 py-3">
-                  <button
-                    type="button"
-                    onClick={() => void toggleStamp(!addStamp)}
-                    disabled={processing}
-                    className={`flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left ${
-                      addStamp ? 'border-[var(--accent)] bg-[var(--accent)]/15 text-white' : 'border-white/20 bg-white/5 text-white'
-                    }`}
-                  >
-                    <Stamp className="h-5 w-5" />
-                    <div>
-                      <p className="font-medium">Add signed stamp</p>
-                      <p className="text-xs opacity-70">SIGNED · date · {signerName}</p>
+
+                <div className="border-t border-white/10 px-3 py-2">
+                  <div className="flex gap-2 overflow-x-auto pb-2">
+                    {pages.map((p, i) => (
+                      <div key={p.id} className="relative shrink-0">
+                        <button type="button" onClick={() => setActivePageIndex(i)}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={p.url}
+                            alt={`Page ${i + 1}`}
+                            className={`h-14 w-10 rounded object-cover ${i === activePageIndex ? 'ring-2 ring-emerald-400' : 'opacity-70'}`}
+                          />
+                        </button>
+                        <div className="mt-1 flex justify-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => movePage(i, -1)}
+                            disabled={i === 0}
+                            className="rounded bg-white/10 px-1 text-[10px] text-white disabled:opacity-30"
+                          >
+                            ←
+                          </button>
+                          <button type="button" onClick={() => duplicatePage(i)} className="text-white/60">
+                            <Copy className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => movePage(i, 1)}
+                            disabled={i === pages.length - 1}
+                            className="rounded bg-white/10 px-1 text-[10px] text-white disabled:opacity-30"
+                          >
+                            →
+                          </button>
+                          <button type="button" onClick={() => removePage(i)} className="text-red-400">
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {showEnhance && (
+                    <div className="mb-2 flex flex-wrap gap-1.5">
+                      {ENHANCEMENT_MODES.map((m) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => void updatePageEnhancement(m.id)}
+                          className={`rounded-full px-3 py-1 text-xs ${
+                            enhancement === m.id ? 'bg-emerald-500 text-white' : 'bg-white/10 text-white/80'
+                          }`}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
                     </div>
-                    {addStamp && <Check className="ml-auto h-5 w-5" />}
-                  </button>
+                  )}
+
+                  {showSignaturePad ? (
+                    <SignaturePad onSave={addSignatureToPage} onCancel={() => setShowSignaturePad(false)} />
+                  ) : (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowSignaturePad(true)}
+                        className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/20 py-2.5 text-sm text-white"
+                      >
+                        <PenLine className="h-4 w-4" />
+                        Add signature
+                      </button>
+                      {loadSavedSignatures().length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const sig = loadSavedSignatures()[0];
+                            addSignatureToPage(sig.dataUrl, sig.name);
+                          }}
+                          className="rounded-xl border border-white/20 px-3 text-xs text-white"
+                        >
+                          Saved
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {qualityIssues.length > 0 && (
+                    <div className="mt-2 rounded-lg bg-amber-500/20 px-3 py-2 text-xs text-amber-200">
+                      {qualityIssues.map((q) => (
+                        <p key={q}>⚠ {q}</p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
 
+            <ProcessingOverlay visible={processing} label={processLabel} progress={processProgress} />
             {error && (
               <p className="absolute bottom-44 left-4 right-4 rounded-lg bg-red-500/90 px-3 py-2 text-center text-sm text-white">{error}</p>
             )}
@@ -261,7 +556,7 @@ export function DocumentScanner({ open, onClose, onSend }: DocumentScannerProps)
             {!reviewMode ? (
               <div className="flex items-center justify-center gap-6">
                 {pages.length > 0 && (
-                  <button type="button" onClick={() => void openReview()} className="rounded-xl border border-white/30 px-4 py-2 text-sm text-white">
+                  <button type="button" onClick={openReview} className="rounded-xl border border-white/30 px-4 py-2 text-sm text-white">
                     Continue
                   </button>
                 )}
@@ -281,12 +576,26 @@ export function DocumentScanner({ open, onClose, onSend }: DocumentScannerProps)
                   <RotateCcw className="h-5 w-5" />
                   Add pages
                 </button>
-                <button type="button" onClick={() => void send()} disabled={sending || processing} className="flex flex-1 items-center justify-center rounded-xl bg-[var(--accent)] py-3 font-semibold text-white disabled:opacity-50">
-                  {sending ? 'Sending…' : addStamp ? 'Sign & send' : 'Send document'}
+                <button
+                  type="button"
+                  onClick={() => void openShare()}
+                  disabled={sending || processing}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-[var(--accent)] py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  <Send className="h-5 w-5" />
+                  {sending ? 'Sending…' : 'Send'}
                 </button>
               </div>
             )}
           </footer>
+
+          <DocumentShareSheet
+            open={showShare}
+            filename={exportFile?.name ?? buildDocumentFilename('pdf')}
+            onClose={() => setShowShare(false)}
+            onAction={(a) => void handleShareAction(a)}
+            sending={sending}
+          />
         </motion.div>
       )}
     </AnimatePresence>,

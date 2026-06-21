@@ -17,6 +17,9 @@ export const useContactStore = create<ContactStore>((set, get) => ({
   isLoading: false,
 
   fetchContacts: async () => {
+    if (typeof window !== 'undefined' && !localStorage.getItem('linkchat_access_token')) {
+      return;
+    }
     set({ isLoading: true });
     try {
       const contacts = await api.get<Contact[]>('/contacts');

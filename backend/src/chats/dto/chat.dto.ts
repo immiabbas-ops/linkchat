@@ -1,5 +1,5 @@
-import { IsOptional, IsString, MinLength } from 'class-validator';
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { IsArray, IsOptional, IsString, MinLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreatePrivateChatDto {
   @ApiPropertyOptional()
@@ -8,13 +8,41 @@ export class CreatePrivateChatDto {
 }
 
 export class CreateGroupChatDto {
-  @ApiPropertyOptional()
+  @ApiProperty()
   @IsString()
   @MinLength(1)
   name: string;
 
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  participantIds?: string[];
+
+  @ApiPropertyOptional({ type: [String], description: 'Mobile numbers to invite (registered users)' })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  participantPhones?: string[];
+
   @ApiPropertyOptional()
-  participantIds: string[];
+  @IsOptional()
+  @IsString()
+  description?: string;
+}
+
+export class AddGroupMembersDto {
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  userIds?: string[];
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  phones?: string[];
 }
 
 export class UpdateChatDto {

@@ -1,27 +1,103 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Mic, Pause, Play } from 'lucide-react';
 import { cn, formatMessageTime } from '@/lib/utils';
 import { mimeFromUrl } from '@/lib/audio';
+import { formatMediaDuration, generateWaveformBars } from '@/lib/media-ui';
 import { Avatar } from '@/components/ui/Avatar';
 
-function generateWaveform(seed: string, count: number): number[] {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash << 5) - hash + seed.charCodeAt(i);
-    hash |= 0;
-  }
-  return Array.from({ length: count }, (_, i) => {
-    const v = Math.abs(Math.sin((hash + i * 17) * 0.7)) * 0.65 + 0.2;
-    return v;
-  });
-}
+const BAR_COUNT = 48;
 
-function formatDuration(seconds: number): string {
-  const s = Math.max(0, Math.floor(seconds));
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
-}
+const VoiceWaveform = memo(function VoiceWaveform({
+  bars,
+  progress,
+  playing,
+  isOwn,
+  onSeek,
+}: {
+  bars: number[];
+  progress: number;
+  playing: boolean;
+  isOwn: boolean;
+  onSeek: (pct: number) => void;
+}) {
+  const ref = useRef<SVGSVGElement>(null);
+  const clipId = useId();
+  const activeColor = isOwn ? '#53bdeb' : 'var(--read-tick)';
+  const idleColor = isOwn ? 'rgba(255,255,255,0.45)' : '#8696a0';
+  const progressWidth = progress * BAR_COUNT * 4;
+
+  const handlePointer = (clientX: number) => {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect?.width) return;
+    onSeek(Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)));
+  };
+
+  return (
+    <svg
+      ref={ref}
+      viewBox={`0 0 ${BAR_COUNT * 4} 28`}
+      className="h-7 w-full min-w-0 cursor-pointer touch-none"
+      preserveAspectRatio="none"
+      onClick={(e) => handlePointer(e.clientX)}
+      onTouchEnd={(e) => {
+        const t = e.changedTouches[0];
+        if (t) handlePointer(t.clientX);
+      }}
+      role="slider"
+      aria-valuenow={Math.round(progress * 100)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+    >
+      <defs>
+        <clipPath id={clipId}>
+          <rect x="0" y="0" width={progressWidth} height="28" />
+        </clipPath>
+        <linearGradient id={`${clipId}-fill`} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor={activeColor} stopOpacity="1" />
+          <stop offset="100%" stopColor={activeColor} stopOpacity="0.85" />
+        </linearGradient>
+      </defs>
+      {bars.map((h, i) => {
+        const barH = Math.max(3, h * 24);
+        const x = i * 4 + 0.5;
+        const y = (28 - barH) / 2;
+        return (
+          <rect
+            key={i}
+            x={x}
+            y={y}
+            width="2.5"
+            height={barH}
+            rx="1.25"
+            fill={idleColor}
+            className={cn(playing && i > progress * BAR_COUNT ? 'opacity-80' : '')}
+          />
+        );
+      })}
+      <g clipPath={`url(#${clipId})`}>
+        {bars.map((h, i) => {
+          const barH = Math.max(3, h * 24);
+          const x = i * 4 + 0.5;
+          const y = (28 - barH) / 2;
+          return (
+            <rect
+              key={`a-${i}`}
+              x={x}
+              y={y}
+              width="2.5"
+              height={barH}
+              rx="1.25"
+              fill={`url(#${clipId}-fill)`}
+            />
+          );
+        })}
+      </g>
+      {playing && <circle cx={progressWidth} cy="14" r="3.5" fill={activeColor} className="drop-shadow-sm" />}
+    </svg>
+  );
+});
 
 interface VoiceMessagePlayerProps {
   src: string;
@@ -32,7 +108,7 @@ interface VoiceMessagePlayerProps {
   status?: React.ReactNode;
 }
 
-export function VoiceMessagePlayer({
+export const VoiceMessagePlayer = memo(function VoiceMessagePlayer({
   src,
   isOwn,
   avatarUrl,
@@ -45,19 +121,16 @@ export function VoiceMessagePlayer({
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [ready, setReady] = useState(false);
   const [error, setError] = useState(false);
   const [speed, setSpeed] = useState(1);
 
   const mimeType = useMemo(() => mimeFromUrl(src), [src]);
-  const bars = useMemo(() => generateWaveform(src, 32), [src]);
-  const progressIndex = Math.floor(progress * bars.length);
+  const bars = useMemo(() => generateWaveformBars(src, BAR_COUNT), [src]);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
-    setReady(false);
     setError(false);
     setPlaying(false);
     setProgress(0);
@@ -73,21 +146,16 @@ export function VoiceMessagePlayer({
     const onMeta = () => {
       if (audio.duration && Number.isFinite(audio.duration)) {
         setDuration(audio.duration);
-        setReady(true);
       }
     };
     const onEnd = () => {
       setPlaying(false);
       setProgress(0);
+      audio.currentTime = 0;
     };
     const onError = () => {
       setError(true);
-      setReady(false);
       setPlaying(false);
-    };
-    const onCanPlay = () => {
-      setReady(true);
-      setError(false);
     };
 
     audio.addEventListener('timeupdate', onTime);
@@ -95,7 +163,6 @@ export function VoiceMessagePlayer({
     audio.addEventListener('durationchange', onMeta);
     audio.addEventListener('ended', onEnd);
     audio.addEventListener('error', onError);
-    audio.addEventListener('canplay', onCanPlay);
 
     return () => {
       audio.removeEventListener('timeupdate', onTime);
@@ -103,7 +170,6 @@ export function VoiceMessagePlayer({
       audio.removeEventListener('durationchange', onMeta);
       audio.removeEventListener('ended', onEnd);
       audio.removeEventListener('error', onError);
-      audio.removeEventListener('canplay', onCanPlay);
       if (blobUrlRef.current) {
         URL.revokeObjectURL(blobUrlRef.current);
         blobUrlRef.current = null;
@@ -115,14 +181,9 @@ export function VoiceMessagePlayer({
     if (audioRef.current) audioRef.current.playbackRate = speed;
   }, [speed]);
 
-  const cycleSpeed = () => {
-    setSpeed((s) => (s === 1 ? 1.5 : s === 1.5 ? 2 : 1));
-  };
-
   const loadBlobFallback = async (): Promise<boolean> => {
     const audio = audioRef.current;
     if (!audio) return false;
-
     try {
       const response = await fetch(src);
       if (!response.ok) return false;
@@ -133,7 +194,6 @@ export function VoiceMessagePlayer({
       audio.src = blobUrlRef.current;
       audio.load();
       setError(false);
-      setReady(true);
       return true;
     } catch {
       return false;
@@ -143,13 +203,11 @@ export function VoiceMessagePlayer({
   const togglePlay = async () => {
     const audio = audioRef.current;
     if (!audio || error) return;
-
     if (playing) {
       audio.pause();
       setPlaying(false);
       return;
     }
-
     try {
       await audio.play();
       setPlaying(true);
@@ -169,78 +227,81 @@ export function VoiceMessagePlayer({
     }
   };
 
-  const avatar = (
-    <div className="relative shrink-0">
-      <Avatar src={avatarUrl} name={avatarName} size="md" />
-      <span
-        className={cn(
-          'absolute flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[var(--read-tick)]',
-          isOwn ? '-bottom-0.5 -right-0.5' : '-bottom-0.5 -left-0.5',
-        )}
-      >
-        <Mic className="h-2.5 w-2.5 text-white" strokeWidth={2.5} />
-      </span>
-    </div>
-  );
+  const seek = useCallback((pct: number) => {
+    const audio = audioRef.current;
+    if (!audio || !audio.duration) return;
+    audio.currentTime = pct * audio.duration;
+    setProgress(pct);
+  }, []);
+
+  const cycleSpeed = () => setSpeed((s) => (s === 1 ? 1.5 : s === 1.5 ? 2 : 1));
+
+  const displayTime = playing
+    ? formatMediaDuration(progress * duration)
+    : formatMediaDuration(duration || 0);
 
   return (
-    <div className="min-w-[240px] max-w-[280px]">
+    <div className="min-w-[240px] max-w-[300px]">
       <audio ref={audioRef} preload="metadata" className="hidden" crossOrigin="anonymous">
         <source src={src} type={mimeType} />
       </audio>
 
-      <div className={cn('flex items-center gap-2', isOwn && 'flex-row-reverse')}>
-        {avatar}
+      <div className={cn('flex items-center gap-2.5', isOwn && 'flex-row-reverse')}>
+        <div className="relative shrink-0">
+          <Avatar src={avatarUrl} name={avatarName} size="md" />
+          <span
+            className={cn(
+              'absolute flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[var(--read-tick)]',
+              isOwn ? '-bottom-0.5 -right-0.5' : '-bottom-0.5 -left-0.5',
+            )}
+          >
+            <Mic className="h-2.5 w-2.5 text-white" strokeWidth={2.5} />
+          </span>
+        </div>
 
         <button
           type="button"
           onClick={togglePlay}
           disabled={error}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-black/[0.04] disabled:opacity-40"
+          className={cn(
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-transform active:scale-95 disabled:opacity-40',
+            isOwn ? 'bg-white/20 text-white' : 'bg-[var(--read-tick)] text-white',
+          )}
           aria-label={playing ? 'Pause' : 'Play'}
         >
           {playing ? (
-            <Pause className="h-5 w-5 fill-current" />
+            <Pause className="h-[18px] w-[18px] fill-current" />
           ) : (
-            <Play className="h-5 w-5 fill-current" />
+            <Play className="ml-0.5 h-[18px] w-[18px] fill-current" />
           )}
         </button>
 
-        <div className="relative flex min-w-0 flex-1 items-end gap-[2px] pb-1 pt-2">
-          {bars.map((h, i) => (
-            <span
-              key={i}
-              className={cn(
-                'w-[3px] rounded-full transition-colors',
-                i <= progressIndex ? 'bg-[var(--read-tick)]' : 'bg-[#8696a0]',
-              )}
-              style={{ height: `${Math.max(4, h * 22)}px` }}
-            />
-          ))}
-          {playing && (
-            <span
-              className="absolute top-1 h-2 w-2 rounded-full bg-[var(--read-tick)]"
-              style={{ left: `${Math.min(98, progress * 100)}%`, transform: 'translateX(-50%)' }}
-            />
-          )}
+        <div className="min-w-0 flex-1 pt-0.5">
+          <VoiceWaveform
+            bars={bars}
+            progress={progress}
+            playing={playing}
+            isOwn={isOwn}
+            onSeek={seek}
+          />
         </div>
       </div>
 
       <div
         className={cn(
-          'mt-0.5 flex items-end justify-between gap-2',
+          'mt-1 flex items-end justify-between gap-2',
           isOwn ? 'pl-[52px]' : 'pr-[52px]',
         )}
       >
         <div className="flex items-center gap-2">
-          <span className="text-[11px] text-[var(--text-secondary)]">
-            {error ? 'Unable to play' : formatDuration(duration || 0)}
+          <span className="text-[11px] tabular-nums text-[var(--text-secondary)]">
+            {error ? 'Unable to play' : displayTime}
           </span>
           {!error && (
             <button
               type="button"
               onClick={cycleSpeed}
-              className="rounded px-1 text-[10px] font-medium text-[var(--accent-dark)] hover:bg-black/[0.04]"
+              className="rounded px-1 text-[10px] font-semibold text-[var(--accent-dark)] hover:bg-black/[0.04]"
             >
               {speed}×
             </button>
@@ -255,4 +316,4 @@ export function VoiceMessagePlayer({
       </div>
     </div>
   );
-}
+});

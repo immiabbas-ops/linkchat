@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Search as SearchIcon } from 'lucide-react';
+import { ArrowLeft, Search as SearchIcon, Lock } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Avatar } from '@/components/ui/Avatar';
@@ -11,6 +11,8 @@ import { MessageActionMenu } from './MessageActionMenu';
 import { ForwardMessageSheet } from './ForwardMessageSheet';
 import { ChatHeaderMenu } from './ChatHeaderMenu';
 import { ContactInfoSheet } from './ContactInfoSheet';
+import { GroupInfoSheet } from './GroupInfoSheet';
+import { E2eeBanner } from './E2eeBanner';
 import { DisappearingMessagesSheet } from './DisappearingMessagesSheet';
 import { EditMessageSheet } from './EditMessageSheet';
 import { AddToContactSheet } from './AddToContactSheet';
@@ -21,17 +23,25 @@ import { StarredMessagesSheet } from './StarredMessagesSheet';
 import { WallpaperPicker } from './WallpaperPicker';
 import { PinnedMessageBar } from './PinnedMessageBar';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
+import { DateSeparator } from './DateSeparator';
+import { ConnectionBanner } from './ConnectionBanner';
 import { useChatStore } from '@/store/chat-store';
 import { useContactStore } from '@/store/contact-store';
 import { useAuthStore } from '@/store/auth-store';
 import { api } from '@/lib/api';
 import { socketService } from '@/lib/socket';
 import { getPresenceLabel } from '@/lib/presence';
+import { getChatDisplayTitle } from '@/lib/phone';
 import { isOwnMessage } from '@/lib/messages';
 import { wallpaperStyle, isMessageExpired } from '@/lib/chat-preferences';
 import { resolveMediaUrl } from '@/lib/media-url';
+import { getMessageMediaFile, isImageMedia } from '@/lib/message-media';
 import { applySignedStamp, blobToFile } from '@/lib/document-utils';
+import { distributeChatKeys, setupChatKeys } from '@/lib/e2ee';
+import { ScreenshotAlertBanner } from './ScreenshotAlertBanner';
+import { useScreenshotDetector } from '@/lib/use-screenshot-detector';
 import type { Message } from '@/types';
+import { dayKey, formatDateSeparator } from '@/lib/chat-dates';
 
 interface ChatRoomProps {
   chatId: string;
@@ -46,6 +56,18 @@ function shouldShowContactAvatar(messages: Message[], index: number, userId?: st
   return next.sender?.id !== message.sender?.id;
 }
 
+function isGroupedWithPrev(messages: Message[], index: number, userId?: string): boolean {
+  if (index === 0) return false;
+  const prev = messages[index - 1];
+  const curr = messages[index];
+  if (dayKey(prev.createdAt) !== dayKey(curr.createdAt)) return false;
+  const prevOwn = isOwnMessage(prev, userId);
+  const currOwn = isOwnMessage(curr, userId);
+  if (prevOwn !== currOwn) return false;
+  if (!currOwn && prev.sender?.id !== curr.sender?.id) return false;
+  return true;
+}
+
 export function ChatRoom({ chatId }: ChatRoomProps) {
   const router = useRouter();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -55,6 +77,7 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
   const [actionMessage, setActionMessage] = useState<Message | null>(null);
   const [showMenu, setShowMenu] = useState(false);
   const [showContactInfo, setShowContactInfo] = useState(false);
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
   const [showAddContact, setShowAddContact] = useState(false);
   const [showDisappearing, setShowDisappearing] = useState(false);
   const [editMessage, setEditMessage] = useState<Message | null>(null);
@@ -68,8 +91,13 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [newMessagesMarkerId, setNewMessagesMarkerId] = useState<string | null>(null);
+  const prevMessageCountRef = useRef(0);
+  const lastMessageIdRef = useRef<string | null>(null);
+  const loadingMoreRef = useRef(false);
   const [lightbox, setLightbox] = useState<{ images: string[]; index: number } | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [chatLoadState, setChatLoadState] = useState<'loading' | 'ready' | 'not-found'>('loading');
 
   const { user } = useAuthStore();
   const {
@@ -88,12 +116,23 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
     ensureChatInList,
     fetchChat,
     upsertChat,
+    removeChatFromList,
     sendMessage,
+    screenshotAlerts,
+    setScreenshotAlert,
+    messageCursors,
+    loadingMoreMessages,
+    loadMoreMessages,
+    isLoadingMessages,
   } = useChatStore();
 
   const { addContact } = useContactStore();
 
   const chat = chats.find((c) => c.id === chatId);
+  const isGroup = chat?.type === 'GROUP';
+  const screenshotAlertsEnabled = user?.settings?.screenshotAlerts !== false;
+  const screenshotAlert = screenshotAlerts[chatId] ?? null;
+  useScreenshotDetector(chatId, chat?.type === 'PRIVATE' && screenshotAlertsEnabled);
   const chatMessages = (messages[chatId] || []).filter((m) => !isMessageExpired(chatId, m.createdAt));
   const typing = typingUsers[chatId] || [];
   const recording = recordingUsers[chatId] || [];
@@ -107,8 +146,12 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
   const imageUrls = useMemo(
     () =>
       chatMessages
-        .filter((m) => m.type === 'IMAGE' && m.mediaFiles?.[0]?.url)
-        .map((m) => resolveMediaUrl(m.mediaFiles![0].url)),
+        .filter((m) => {
+          const media = getMessageMediaFile(m);
+          if (!media) return false;
+          return m.type === 'IMAGE' || (m.type === 'DOCUMENT' && isImageMedia(media.mimeType, media.url, media.fileName));
+        })
+        .map((m) => resolveMediaUrl(getMessageMediaFile(m)!.url)),
     [chatMessages],
   );
 
@@ -119,45 +162,141 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
   }, [chatId, setActiveChat, ensureChatInList]);
 
   useEffect(() => {
+    let active = true;
+    setChatLoadState('loading');
+    void (async () => {
+      await ensureChatInList(chatId);
+      if (!active) return;
+      const found = useChatStore.getState().chats.some((c) => c.id === chatId);
+      setChatLoadState(found ? 'ready' : 'not-found');
+    })();
+    return () => {
+      active = false;
+    };
+  }, [chatId, ensureChatInList]);
+
+  useEffect(() => {
+    if (chat) setChatLoadState('ready');
+  }, [chat]);
+
+  useEffect(() => {
+    if (!chat?.isEncrypted || chat.source === 'SMS' || chat.source === 'TELEGRAM' || !user?.id) return;
+    const memberIds = chat.members?.map((m) => m.id) || (chat.participantId ? [user.id, chat.participantId] : [user.id]);
+    void setupChatKeys(chatId, memberIds, user.id);
+  }, [chatId, chat?.isEncrypted, chat?.source, chat?.members, chat?.participantId, user?.id]);
+
+  useEffect(() => {
     if (!showScrollBtn) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [chatMessages.length, presence, showScrollBtn]);
+  }, [chatMessages.length, showScrollBtn]);
+
+  useEffect(() => {
+    const last = chatMessages[chatMessages.length - 1];
+    const prevCount = prevMessageCountRef.current;
+    const grew = chatMessages.length > prevCount;
+
+    if (grew && showScrollBtn && last && !loadingMoreRef.current) {
+      const prevLastId = lastMessageIdRef.current;
+      if (prevLastId && last.id !== prevLastId) {
+        setNewMessagesMarkerId(last.id);
+      }
+    }
+
+    if (last) lastMessageIdRef.current = last.id;
+    prevMessageCountRef.current = chatMessages.length;
+  }, [chatMessages, showScrollBtn]);
 
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
     setShowScrollBtn(dist > 120);
+
+    if (el.scrollTop < 80 && messageCursors[chatId] && !loadingMoreMessages[chatId] && !loadingMoreRef.current) {
+      loadingMoreRef.current = true;
+      const prevHeight = el.scrollHeight;
+      void loadMoreMessages(chatId).then(() => {
+        requestAnimationFrame(() => {
+          const node = scrollRef.current;
+          if (node) node.scrollTop = node.scrollHeight - prevHeight;
+          loadingMoreRef.current = false;
+        });
+      });
+    }
   };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     setShowScrollBtn(false);
+    setNewMessagesMarkerId(null);
   };
 
-  const jumpToMessage = (messageId: string) => {
-    const el = messageRefs.current[messageId];
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      setHighlightId(messageId);
-      setTimeout(() => setHighlightId(null), 1500);
-    }
-  };
+  const jumpToMessage = useCallback(
+    async (messageId: string) => {
+      const scrollTo = () => {
+        const el = messageRefs.current[messageId];
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          setHighlightId(messageId);
+          setTimeout(() => setHighlightId(null), 1500);
+          return true;
+        }
+        return false;
+      };
 
-  const handleLongPress = (message: Message) => {
-    if (selectMode) {
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(message.id)) next.delete(message.id);
-        else next.add(message.id);
-        return next;
-      });
-      return;
-    }
-    setActionMessage(message);
-    setShowMenu(true);
-  };
+      if (scrollTo()) return;
+
+      let cursor = useChatStore.getState().messageCursors[chatId];
+      let attempts = 0;
+      while (!messageRefs.current[messageId] && cursor && attempts < 12) {
+        await loadMoreMessages(chatId);
+        await new Promise((r) => setTimeout(r, 80));
+        cursor = useChatStore.getState().messageCursors[chatId];
+        attempts += 1;
+      }
+      scrollTo();
+    },
+    [chatId, loadMoreMessages],
+  );
+
+  const handleLongPress = useCallback(
+    (message: Message) => {
+      if (selectMode) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(message.id)) next.delete(message.id);
+          else next.add(message.id);
+          return next;
+        });
+        return;
+      }
+      setActionMessage(message);
+      setShowMenu(true);
+    },
+    [selectMode],
+  );
+
+  const handleReply = useCallback(
+    (message: Message) => {
+      setReplyTo(message);
+    },
+    [setReplyTo],
+  );
+
+  const handleRetry = useCallback(
+    (message: Message) => {
+      void retryMessage(chatId, message);
+    },
+    [chatId, retryMessage],
+  );
+
+  const handleImageClick = useCallback(
+    (url: string) => {
+      setLightbox({ images: imageUrls, index: Math.max(0, imageUrls.indexOf(url)) });
+    },
+    [imageUrls],
+  );
 
   const handleReact = (message: Message, emoji: string) => {
     const userId = user?.id;
@@ -335,7 +474,28 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
     setSelectedIds(new Set());
   };
 
-  const statusLine = presence || (chat?.isOnline ? 'online' : '');
+  const statusLine =
+    presence ||
+    (chat?.type === 'GROUP'
+      ? `${chat.members?.length || 0} participants`
+      : chat?.isOnline
+        ? 'online'
+        : '');
+  const showE2eeBanner =
+    chat?.isEncrypted && chat.source !== 'SMS' && chat.source !== 'TELEGRAM' && chatMessages.length < 8;
+
+  if (chatLoadState === 'not-found') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4 px-6">
+        <p className="text-center text-[var(--text-secondary)]">
+          Chat not found or you don&apos;t have access.
+        </p>
+        <Link href="/chats" className="font-medium text-[var(--accent-dark)]">
+          Back to chats
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="relative flex h-full flex-col wa-chat-bg" key={wallpaperKey}>
@@ -354,10 +514,19 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
             <Link href="/chats" className="rounded-full p-2 hover:bg-white/10 md:hidden" aria-label="Back">
               <ArrowLeft className="h-6 w-6" />
             </Link>
-            <button type="button" onClick={() => setShowContactInfo(true)} className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1 py-1 text-left hover:bg-white/10">
+            <button
+              type="button"
+              onClick={() => (chat?.type === 'GROUP' ? setShowGroupInfo(true) : setShowContactInfo(true))}
+              className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1 py-1 text-left hover:bg-white/10"
+            >
               <Avatar src={chat?.avatarUrl} name={chat?.title} size="md" online={chat?.isOnline} />
               <div className="min-w-0 flex-1">
-                <h2 className="truncate text-[16px] font-normal">{chat?.title || 'Chat'}</h2>
+                <div className="flex items-center gap-1.5">
+                  <h2 className="truncate text-[16px] font-normal">{getChatDisplayTitle(chat) || 'Chat'}</h2>
+                  {chat?.isEncrypted && chat.source !== 'SMS' && chat.source !== 'TELEGRAM' && (
+                    <Lock className="h-3.5 w-3.5 shrink-0 opacity-80" />
+                  )}
+                </div>
                 {statusLine && <p className="truncate text-[13px] opacity-80">{statusLine}</p>}
               </div>
             </button>
@@ -367,7 +536,14 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
             <ChatHeaderMenu
               chat={chat}
               onContactInfo={() => setShowContactInfo(true)}
+              onGroupInfo={() => setShowGroupInfo(true)}
               onAddToContact={() => setShowAddContact(true)}
+              onAddMembers={() => setShowGroupInfo(true)}
+              onLeaveGroup={async () => {
+                await api.post(`/chats/${chatId}/leave`);
+                removeChatFromList(chatId);
+                router.push('/chats');
+              }}
               onClearChat={() => clearChatMessages(chatId)}
               onAction={handleHeaderAction}
             />
@@ -375,6 +551,7 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
         )}
       </header>
 
+      <ConnectionBanner />
       <PinnedMessageBar
         message={pinnedMessage}
         onUnpin={async () => {
@@ -390,39 +567,82 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
         className="relative flex-1 overflow-y-auto scrollbar-hide py-2"
         style={{ ...wallpaperStyle(chatId), backgroundColor: 'var(--bg-primary)' }}
       >
-        {chatMessages.map((message, index) => (
+        <ScreenshotAlertBanner
+          alert={screenshotAlert}
+          onDismiss={() => setScreenshotAlert(chatId, null)}
+        />
+        {showE2eeBanner && <E2eeBanner />}
+        {isLoadingMessages && chatMessages.length === 0 && (
+          <div className="flex flex-col items-center justify-center gap-3 py-16">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--accent-dark)] border-t-transparent" />
+            <p className="text-sm text-[var(--text-secondary)]">Loading messages…</p>
+          </div>
+        )}
+        {loadingMoreMessages[chatId] && (
+          <div className="flex justify-center py-2">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--accent-dark)] border-t-transparent" />
+          </div>
+        )}
+        {chatMessages.map((message, index) => {
+          const prev = chatMessages[index - 1];
+          const showDate = !prev || dayKey(prev.createdAt) !== dayKey(message.createdAt);
+          return (
+          <div key={message.id}>
+            {showDate && <DateSeparator label={formatDateSeparator(message.createdAt)} />}
+            {message.id === newMessagesMarkerId && (
+              <div className="my-2 flex justify-center">
+                <span className="rounded-full bg-[var(--accent)]/15 px-3 py-1 text-xs font-medium text-[var(--accent-dark)]">
+                  New messages
+                </span>
+              </div>
+            )}
           <div
-            key={message.id}
             ref={(el) => { messageRefs.current[message.id] = el; }}
             className={highlightId === message.id ? 'animate-pulse rounded-lg ring-2 ring-[var(--accent)]' : undefined}
           >
             <MessageBubble
               message={message}
-              contactAvatar={chat?.avatarUrl}
-              contactName={chat?.title}
+              contactAvatar={isGroup ? message.sender?.avatarUrl : chat?.avatarUrl}
+              contactName={isGroup ? message.sender?.displayName : chat?.title}
+              isGroup={isGroup}
               showContactAvatar={shouldShowContactAvatar(chatMessages, index, user?.id)}
+              groupedWithPrev={isGroupedWithPrev(chatMessages, index, user?.id)}
               onLongPress={handleLongPress}
-              onReply={() => setReplyTo(message)}
-              onRetry={() => void retryMessage(chatId, message)}
-              onImageClick={(url) => setLightbox({ images: imageUrls, index: Math.max(0, imageUrls.indexOf(url)) })}
+              onReply={() => handleReply(message)}
+              onReplyJump={(id) => void jumpToMessage(id)}
+              onRetry={() => handleRetry(message)}
+              onImageClick={handleImageClick}
               selectMode={selectMode}
               selected={selectedIds.has(message.id)}
             />
           </div>
-        ))}
+          </div>
+          );
+        })}
         {presence && <p className="px-12 py-1 text-xs italic text-[var(--accent-dark)]">{presence}</p>}
         <div ref={messagesEndRef} />
-        <ScrollToBottomButton visible={showScrollBtn} onClick={scrollToBottom} />
       </div>
 
-      {!selectMode && <ChatInput chatId={chatId} />}
+      <ScrollToBottomButton
+        visible={showScrollBtn}
+        onClick={scrollToBottom}
+        className="absolute bottom-[calc(4.75rem+env(safe-area-inset-bottom,0px))] right-[4.75rem] z-20"
+      />
+
+      {!selectMode && (
+        <ChatInput
+          chatId={chatId}
+          isSmsChat={chat?.source === 'SMS'}
+          smsPeerPhone={chat?.participantPhone}
+        />
+      )}
 
       <MessageActionMenu message={actionMessage} open={showMenu} onClose={() => setShowMenu(false)} onAction={handleAction} onReact={handleReact} contactName={chat?.title} />
       <ForwardMessageSheet open={!!forwardMessage || bulkForwardQueue.length > 0} currentChatId={chatId} onClose={() => { setForwardMessage(null); setBulkForwardQueue([]); }} onSelect={handleForward} />
       <ContactInfoSheet
         chat={chat}
         chatId={chatId}
-        open={showContactInfo}
+        open={showContactInfo && chat?.type !== 'GROUP'}
         onClose={() => setShowContactInfo(false)}
         onContactRemoved={async () => {
           await fetchChats();
@@ -433,6 +653,27 @@ export function ChatRoom({ chatId }: ChatRoomProps) {
           await fetchChats();
           const updated = await fetchChat(chatId);
           if (updated) upsertChat(updated);
+        }}
+      />
+      <GroupInfoSheet
+        chat={chat}
+        chatId={chatId}
+        open={showGroupInfo && chat?.type === 'GROUP'}
+        onClose={() => setShowGroupInfo(false)}
+        onUpdated={async (updated) => {
+          upsertChat(updated);
+          if (user?.id && updated.members?.length) {
+            const memberIds = updated.members.map((m) => m.id);
+            await distributeChatKeys(
+              chatId,
+              memberIds.filter((id) => id !== user.id),
+              user.id,
+            );
+          }
+        }}
+        onLeft={() => {
+          removeChatFromList(chatId);
+          router.push('/chats');
         }}
       />
       <AddToContactSheet

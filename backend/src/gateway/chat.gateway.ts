@@ -149,11 +149,20 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  private async emitToRoom(room: string, event: string, data: unknown) {
+    const useClusterRedis = this.config.get('USE_EMBEDDED_REDIS') !== 'true';
+    if (useClusterRedis) {
+      await this.broadcastViaRedis(event, room, data);
+    } else {
+      this.server.to(room).emit(event, data);
+    }
+  }
+
   private async deliverToChatMembers(
     chatId: string,
     event: string,
     data: unknown,
-    excludeUserId?: string,
+    _excludeUserId?: string,
   ) {
     const members = await this.prisma.chatMember.findMany({
       where: { chatId, leftAt: null },
@@ -164,13 +173,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     for (const member of members) {
       this.joinUserToChat(member.userId, chatId);
-      if (member.userId !== excludeUserId) {
-        this.server.to(`user:${member.userId}`).emit(event, data);
-      }
     }
 
-    this.server.to(room).emit(event, data);
-    await this.broadcastViaRedis(event, room, data);
+    await this.emitToRoom(room, event, data);
   }
 
   async publishMessage(chatId: string, message: unknown, excludeUserId?: string) {
@@ -178,7 +183,17 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage('chat:join')
-  handleJoin(@ConnectedSocket() client: AuthenticatedSocket, @MessageBody() data: { chatId: string }) {
+  async handleJoin(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { chatId: string },
+  ) {
+    if (!client.userId) return { error: 'Unauthorized' };
+
+    const member = await this.prisma.chatMember.findFirst({
+      where: { chatId: data.chatId, userId: client.userId, leftAt: null },
+    });
+    if (!member) return { error: 'Not a member' };
+
     client.join(`chat:${data.chatId}`);
     return { joined: data.chatId };
   }
@@ -209,7 +224,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     client.join(`chat:${data.chatId}`);
     await this.deliverToChatMembers(data.chatId, 'message:new', message);
-    client.emit('message:new', message);
 
     if (data.content?.trim() && !data.metadata?.fromTelegram) {
       void import('../telegram/telegram.service').then(async ({ TelegramService }) => {
@@ -236,8 +250,32 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       messageIds: result.messageIds,
     };
 
-    await this.broadcastViaRedis('message:read', `chat:${data.chatId}`, payload);
-    this.server.to(`chat:${data.chatId}`).emit('message:read', payload);
+    await this.emitToRoom(`chat:${data.chatId}`, 'message:read', payload);
+
+    return result;
+  }
+
+  @SubscribeMessage('message:delivered')
+  async handleDelivered(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { chatId: string; messageIds: string[] },
+  ) {
+    if (!client.userId || !data.messageIds?.length) return;
+
+    const result = await this.messages.markAsDelivered(
+      data.chatId,
+      client.userId,
+      data.messageIds,
+    );
+
+    if (!result.messageIds?.length) return result;
+
+    const payload = {
+      chatId: data.chatId,
+      messageIds: result.messageIds,
+    };
+
+    await this.emitToRoom(`chat:${data.chatId}`, 'message:delivered', payload);
 
     return result;
   }
@@ -248,6 +286,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { chatId: string; isTyping: boolean },
   ) {
     if (!client.userId) return;
+
+    const member = await this.prisma.chatMember.findFirst({
+      where: { chatId: data.chatId, userId: client.userId, leftAt: null },
+    });
+    if (!member) return;
 
     const profile = await this.prisma.profile.findUnique({ where: { userId: client.userId } });
 
@@ -265,6 +308,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { chatId: string; isRecording: boolean },
   ) {
     if (!client.userId) return;
+
+    const member = await this.prisma.chatMember.findFirst({
+      where: { chatId: data.chatId, userId: client.userId, leftAt: null },
+    });
+    if (!member) return;
 
     const profile = await this.prisma.profile.findUnique({ where: { userId: client.userId } });
 
@@ -287,8 +335,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       content: data.content,
     });
 
-    await this.broadcastViaRedis('message:edit', `chat:${message.chatId}`, message);
-    this.server.to(`chat:${message.chatId}`).emit('message:edit', message);
+    await this.emitToRoom(`chat:${message.chatId}`, 'message:edit', message);
 
     return message;
   }
@@ -304,11 +351,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       scope: data.scope,
     });
 
-    const payload = { messageId: data.messageId, scope: data.scope, userId: client.userId };
+    const payload = {
+      messageId: data.messageId,
+      scope: data.scope,
+      userId: client.userId,
+      chatId: data.chatId,
+    };
 
     if (data.scope === 'EVERYONE') {
-      await this.broadcastViaRedis('message:delete', `chat:${data.chatId}`, payload);
-      this.server.to(`chat:${data.chatId}`).emit('message:delete', payload);
+      await this.emitToRoom(`chat:${data.chatId}`, 'message:delete', payload);
     }
 
     return result;
@@ -326,8 +377,37 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
 
     const payload = { ...result, messageId: data.messageId, userId: client.userId };
-    this.server.to(`chat:${data.chatId}`).emit('message:react', payload);
+    await this.emitToRoom(`chat:${data.chatId}`, 'message:react', payload);
 
     return result;
+  }
+
+  async publishRead(chatId: string, payload: unknown) {
+    await this.emitToRoom(`chat:${chatId}`, 'message:read', payload);
+  }
+
+  @SubscribeMessage('chat:screenshot')
+  async handleScreenshot(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { chatId: string },
+  ) {
+    if (!client.userId || !data.chatId) return;
+
+    const membership = await this.prisma.chatMember.findFirst({
+      where: { chatId: data.chatId, userId: client.userId, leftAt: null },
+    });
+    if (!membership) return;
+
+    const profile = await this.prisma.profile.findUnique({ where: { userId: client.userId } });
+    const payload = {
+      chatId: data.chatId,
+      userId: client.userId,
+      displayName: profile?.displayName,
+      username: profile?.username,
+      at: new Date().toISOString(),
+    };
+
+    await this.deliverToChatMembers(data.chatId, 'user:screenshot', payload, client.userId);
+    return { ok: true };
   }
 }

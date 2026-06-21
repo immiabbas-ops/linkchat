@@ -1,11 +1,4 @@
-export function normalizePhone(value: string): string {
-  return value.replace(/\D/g, '');
-}
-
-export function formatPhoneDisplay(phone?: string | null): string {
-  if (!phone) return '';
-  return phone.startsWith('+') ? phone : `+${phone}`;
-}
+export { normalizePhone, formatPhoneDisplay, getChatDisplayTitle } from './phone';
 
 export function getPresenceLabel(
   typing: { userId: string; displayName?: string }[],

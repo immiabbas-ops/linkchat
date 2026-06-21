@@ -1,12 +1,13 @@
 import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { formatPhoneDisplay as formatPhoneInternational, normalizePhoneToE164Digits } from '../common/phone.util';
 
 @Injectable()
 export class ContactsService {
   constructor(private prisma: PrismaService) {}
 
   normalizePhone(phone: string) {
-    return phone.replace(/\D/g, '');
+    return normalizePhoneToE164Digits(phone);
   }
 
   async listContacts(userId: string) {
@@ -96,8 +97,6 @@ export class ContactsService {
   }
 
   formatPhoneDisplay(phone?: string | null) {
-    if (!phone) return '';
-    const digits = this.normalizePhone(phone);
-    return digits.startsWith('+') ? digits : `+${digits}`;
+    return formatPhoneInternational(phone);
   }
 }

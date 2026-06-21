@@ -8,8 +8,8 @@ export default function ChatDetailPage({ params }: { params: { id: string } }) {
   return (
     <AuthGuard>
       <div className="flex h-full">
-        <div className="hidden w-80 border-r border-[var(--border-glass)] lg:block">
-          <ChatList />
+        <div className="hidden h-full overflow-hidden border-r border-[var(--border-glass)] lg:block lg:w-80 lg:shrink-0">
+          <ChatList embedded />
         </div>
         <div className="flex-1">
           <ChatRoom chatId={params.id} />

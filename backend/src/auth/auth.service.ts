@@ -10,6 +10,7 @@ import * as bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from './email.service';
+import { generateUniqueUsername } from '../users/username.util';
 import {
   RequestOtpDto,
   VerifyOtpDto,
@@ -27,6 +28,16 @@ export class AuthService {
     private email: EmailService,
   ) {}
 
+  private async ensureProfileUsername(userId: string, displayName: string) {
+    const profile = await this.prisma.profile.findUnique({ where: { userId } });
+    if (!profile || profile.username) return;
+    const username = await generateUniqueUsername(displayName, async (name) => {
+      const existing = await this.prisma.profile.findFirst({ where: { username: name } });
+      return !!existing;
+    });
+    await this.prisma.profile.update({ where: { userId }, data: { username } });
+  }
+
   async requestOtp(dto: RequestOtpDto) {
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
@@ -43,10 +54,14 @@ export class AuthService {
     };
   }
 
+  private allowDevOtpBypass(code: string): boolean {
+    return this.config.get('NODE_ENV') !== 'production' && code === '0000';
+  }
+
   async verifyOtp(dto: VerifyOtpDto) {
     const email = dto.email.toLowerCase();
 
-    if (dto.code !== '0000') {
+    if (!this.allowDevOtpBypass(dto.code)) {
       const otp = await this.prisma.otpCode.findFirst({
         where: {
           email,
@@ -95,6 +110,7 @@ export class AuthService {
           settings: { create: {} },
         },
       });
+      await this.ensureProfileUsername(user.id, dto.displayName || email.split('@')[0]);
     } else {
       await this.prisma.user.update({
         where: { id: user.id },
@@ -131,7 +147,9 @@ export class AuthService {
       throw new BadRequestException('Enter a valid mobile number');
     }
 
-    this.assertDevOtp(dto.code);
+    if (!this.allowDevOtpBypass(dto.code)) {
+      throw new BadRequestException('Invalid or expired OTP');
+    }
 
     const profile = await this.prisma.profile.findUnique({ where: { phone: normalized } });
     if (!profile) {
@@ -147,7 +165,9 @@ export class AuthService {
       throw new BadRequestException('Enter a valid mobile number');
     }
 
-    this.assertDevOtp(dto.code);
+    if (!this.allowDevOtpBypass(dto.code)) {
+      throw new BadRequestException('Invalid or expired OTP');
+    }
 
     const existing = await this.prisma.profile.findUnique({ where: { phone: normalized } });
     if (existing) {
@@ -174,6 +194,8 @@ export class AuthService {
         settings: { create: {} },
       },
     });
+
+    await this.ensureProfileUsername(user.id, dto.displayName.trim());
 
     return this.completeAuth(user.id, dto.deviceId, dto.deviceName);
   }
@@ -202,10 +224,10 @@ export class AuthService {
     return this.generateTokens(matchedSession.userId, matchedSession.deviceId);
   }
 
-  async logout(userId: string, sessionId?: string) {
-    if (sessionId) {
-      await this.prisma.session.update({
-        where: { id: sessionId },
+  async logout(userId: string, deviceId?: string) {
+    if (deviceId) {
+      await this.prisma.session.updateMany({
+        where: { userId, deviceId, revokedAt: null },
         data: { revokedAt: new Date() },
       });
     }
@@ -237,12 +259,6 @@ export class AuthService {
 
   private normalizePhone(phone: string) {
     return phone.replace(/\D/g, '');
-  }
-
-  private assertDevOtp(code: string) {
-    if (code !== '0000') {
-      throw new BadRequestException('Invalid or expired OTP');
-    }
   }
 
   private async completeAuth(userId: string, deviceId?: string, deviceName?: string) {

@@ -10,6 +10,12 @@ import { resolveMediaUrl } from '@/lib/media-url';
 import { useAuthStore } from '@/store/auth-store';
 
 import type { Chat, Message } from '@/types';
+import type { ScreenshotAlert } from '@/components/chat/ScreenshotAlertBanner';
+import { decryptForChat, encryptForChat, setupChatKeys } from '@/lib/e2ee';
+import { sortChats } from '@/lib/chat-sort';
+import { sortMessagesByCreatedAt, getClientMessageId, createClientMessageId } from '@/lib/message-sort';
+import { enqueueOutbound, dequeueOutbound, getOutboundQueue } from '@/lib/message-queue';
+import { scheduleTypingHide, cancelTypingHide } from '@/lib/typing-debounce';
 
 
 
@@ -41,6 +47,10 @@ interface ChatState {
 
   isLoadingMessages: boolean;
 
+  messageCursors: Record<string, string | null>;
+
+  loadingMoreMessages: Record<string, boolean>;
+
   replyTo: Message | null;
 
   socketReady: boolean;
@@ -52,6 +62,8 @@ interface ChatState {
   setActiveChat: (chatId: string | null) => void;
 
   fetchMessages: (chatId: string, cursor?: string) => Promise<void>;
+
+  loadMoreMessages: (chatId: string) => Promise<void>;
 
   sendMessage: (chatId: string, content: string, options?: Partial<Message>) => Promise<void>;
 
@@ -85,13 +97,61 @@ interface ChatState {
 
   removeChatFromList: (chatId: string) => void;
 
+  screenshotAlerts: Record<string, ScreenshotAlert | null>;
+  setScreenshotAlert: (chatId: string, alert: ScreenshotAlert | null) => void;
+
   initSocketListeners: () => void;
+
+  onReconnect: () => Promise<void>;
 
 }
 
 
 
 let socketUnsubs: (() => void)[] = [];
+
+function getChatMemberIds(chat: Chat | undefined, userId?: string | null): string[] {
+  if (chat?.members?.length) return chat.members.map((m) => m.id);
+  if (userId && chat?.participantId) return [userId, chat.participantId];
+  return userId ? [userId] : [];
+}
+
+function shouldEncryptChat(chat: Chat | undefined): boolean {
+  return !!chat?.isEncrypted && chat.source !== 'SMS' && chat.source !== 'TELEGRAM';
+}
+
+async function decryptMessageIfNeeded(message: Message, chat: Chat | undefined, userId?: string | null): Promise<Message> {
+  if (!shouldEncryptChat(chat) || !userId) return message;
+
+  let content = message.content;
+  if (message.content) {
+    content = await decryptForChat(
+      message.chatId,
+      message.content,
+      getChatMemberIds(chat, userId),
+      userId,
+    );
+  }
+
+  let replyTo = message.replyTo;
+  if (replyTo?.content) {
+    const decryptedReply = await decryptForChat(
+      message.chatId,
+      replyTo.content,
+      getChatMemberIds(chat, userId),
+      userId,
+    );
+    replyTo = { ...replyTo, content: decryptedReply };
+  }
+
+  return { ...message, content, replyTo };
+}
+
+async function decryptMessages(messages: Message[], chatId: string, userId?: string | null): Promise<Message[]> {
+  const chat = useChatStore.getState().chats.find((c) => c.id === chatId);
+  if (!shouldEncryptChat(chat)) return messages;
+  return Promise.all(messages.map((m) => decryptMessageIfNeeded(m, chat, userId)));
+}
 
 function mergeMessage(existing: Message, incoming: Message): Message {
   return {
@@ -128,15 +188,16 @@ function mergeMessagesById(incoming: Message[], existing: Message[] = []) {
   }
 
   for (const message of existing) {
-    if (message.id.startsWith('pending-')) continue;
+    if (message.id.startsWith('pending-')) {
+      byId.set(message.id, message);
+      continue;
+    }
     if (!byId.has(message.id)) {
       byId.set(message.id, message);
     }
   }
 
-  return Array.from(byId.values()).sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-  );
+  return sortMessagesByCreatedAt(Array.from(byId.values()));
 }
 
 function buildOptimisticMessage(
@@ -145,14 +206,32 @@ function buildOptimisticMessage(
   options?: Partial<Message>,
   user?: { id: string; profile?: { displayName?: string; avatarUrl?: string } } | null,
 ): Message {
+  const meta = options?.metadata;
+  const metaUrl = meta?.url as string | undefined;
+  const mediaFiles = metaUrl
+    ? [
+        {
+          id: (meta?.mediaFileId as string) || `pending-media-${Date.now()}`,
+          fileName: (meta?.fileName as string) || content || 'file',
+          mimeType: (meta?.mimeType as string) || '',
+          url: resolveMediaUrl(metaUrl),
+          fileSize: meta?.fileSize as number | undefined,
+        },
+      ]
+    : undefined;
+
+  const clientMessageId = createClientMessageId();
+
   return {
     id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     chatId,
     type: options?.type || 'TEXT',
     content,
     status: 'SENT',
+    sendState: 'sending',
     createdAt: new Date().toISOString(),
-    metadata: options?.metadata,
+    metadata: { ...options?.metadata, clientMessageId },
+    mediaFiles,
     sender: user
       ? {
           id: user.id,
@@ -184,7 +263,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   isLoadingMessages: false,
 
+  messageCursors: {},
+
+  loadingMoreMessages: {},
+
   replyTo: null,
+
+  screenshotAlerts: {},
 
   socketReady: false,
 
@@ -198,7 +283,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const result = await api.get<{ items: Chat[] }>('/chats');
 
-      set({ chats: result.items, isLoadingChats: false });
+      set({ chats: sortChats(result.items), isLoadingChats: false });
 
       result.items.forEach((chat) => socketService.joinChat(chat.id));
 
@@ -213,19 +298,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
 
   setActiveChat: (chatId) => {
-
-    set({ activeChatId: chatId });
+    set({ activeChatId: chatId, replyTo: null });
 
     if (chatId) {
-
       socketService.joinChat(chatId);
-
       get().fetchMessages(chatId);
-
       get().markMessagesRead(chatId);
-
     }
-
   },
 
 
@@ -244,40 +323,85 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const userId = useAuthStore.getState().user?.id;
       const items = (result.items || []).map((m) => normalizeMessage(m, userId));
+      const decrypted = await decryptMessages(items, chatId, userId);
 
       set((state) => ({
         messages: {
           ...state.messages,
           [chatId]: cursor
-            ? [...items, ...(state.messages[chatId] || [])]
-            : mergeMessagesById(items, state.messages[chatId]),
+            ? mergeMessagesById(decrypted, state.messages[chatId] || [])
+            : mergeMessagesById(decrypted, state.messages[chatId]),
         },
+        messageCursors: { ...state.messageCursors, [chatId]: result.nextCursor ?? null },
         isLoadingMessages: false,
+        loadingMoreMessages: { ...state.loadingMoreMessages, [chatId]: false },
       }));
+
+      const toAck = decrypted
+        .filter((m) => !m.isOwn && m.status === 'SENT')
+        .map((m) => m.id);
+      if (toAck.length) socketService.acknowledgeDelivery(chatId, toAck);
 
     } catch {
 
-      set({ isLoadingMessages: false });
+      set((state) => ({
+        isLoadingMessages: false,
+        loadingMoreMessages: { ...state.loadingMoreMessages, [chatId]: false },
+      }));
 
     }
 
   },
 
+  loadMoreMessages: async (chatId) => {
+    const { messageCursors, loadingMoreMessages } = get();
+    const cursor = messageCursors[chatId];
+    if (!cursor || loadingMoreMessages[chatId]) return;
+    set((state) => ({
+      loadingMoreMessages: { ...state.loadingMoreMessages, [chatId]: true },
+    }));
+    await get().fetchMessages(chatId, cursor);
+  },
+
 
 
   sendMessage: async (chatId, content, options) => {
-
-    const replyToId = get().replyTo?.id;
+    const reply = get().replyTo;
+    const replyToId = reply?.chatId === chatId ? reply.id : undefined;
     const user = useAuthStore.getState().user;
+    const chat = get().chats.find((c) => c.id === chatId);
     const optimistic = buildOptimisticMessage(chatId, content, options, user);
     get().addMessage(optimistic);
 
-    const finalize = (message: Message) => {
+    let contentToSend = content;
+    if (shouldEncryptChat(chat) && user?.id) {
+      const memberIds = getChatMemberIds(chat, user.id);
+      await setupChatKeys(chatId, memberIds, user.id);
+      contentToSend = await encryptForChat(chatId, content, memberIds, user.id);
+    }
+
+    const clientMessageId = getClientMessageId(optimistic);
+    const sendMeta = { ...options?.metadata, clientMessageId };
+
+    const finalize = async (message: Message) => {
       const userId = useAuthStore.getState().user?.id;
-      const normalized = normalizeMessage(message, userId);
+      const chatState = get().chats.find((c) => c.id === chatId);
+      let normalized = normalizeMessage(message, userId);
+      normalized = await decryptMessageIfNeeded(normalized, chatState, userId);
+      normalized = { ...normalized, sendState: undefined };
+
+      if (clientMessageId) dequeueOutbound(optimistic.id);
 
       set((state) => {
-        const list = (state.messages[chatId] || []).filter((m) => m.id !== optimistic.id);
+        const list = (state.messages[chatId] || []).filter(
+          (m) =>
+            m.id !== optimistic.id &&
+            !(
+              m.id.startsWith('pending-') &&
+              m.isOwn &&
+              getClientMessageId(m) === clientMessageId
+            ),
+        );
         const existingIdx = list.findIndex((m) => m.id === normalized.id);
 
         if (existingIdx >= 0) {
@@ -293,65 +417,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
           replyTo: null,
           messages: {
             ...state.messages,
-            [chatId]: list,
+            [chatId]: sortMessagesByCreatedAt(list),
           },
         };
       });
     };
 
-    const dropOptimistic = () => {
-      set((state) => ({
-        messages: {
-          ...state.messages,
-          [chatId]: (state.messages[chatId] || []).filter((m) => m.id !== optimistic.id),
-        },
-      }));
-    };
-
     try {
-
       const message = await socketService.sendMessage({
-
         chatId,
-
-        content,
-
+        content: contentToSend,
         type: options?.type || 'TEXT',
-
         replyToId,
-
         mediaFileId: options?.metadata?.mediaFileId as string,
-
-        metadata: options?.metadata,
-
+        metadata: sendMeta,
       });
-
-      finalize(message);
-
+      await finalize(message);
     } catch {
-
       try {
-
         const message = await api.post<Message>('/messages', {
-
           chatId,
-
-          content,
-
+          content: contentToSend,
           type: options?.type || 'TEXT',
-
           replyToId,
-
           mediaFileId: options?.metadata?.mediaFileId as string,
-
-          metadata: options?.metadata,
-
+          metadata: sendMeta,
         });
-
-        finalize(message);
-
+        await finalize(message);
       } catch (restError) {
-
+        enqueueOutbound({
+          id: optimistic.id,
+          chatId,
+          content,
+          options,
+          replyToId,
+          createdAt: Date.now(),
+        });
         set((state) => ({
           messages: {
             ...state.messages,
@@ -360,131 +461,90 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ),
           },
         }));
-
         throw restError;
-
       }
-
     }
-
   },
 
-
-
   addMessage: async (message) => {
-
     const userId = useAuthStore.getState().user?.id;
-
-    const normalized = normalizeMessage(message, userId);
+    let normalized = normalizeMessage(message, userId);
+    const chat = get().chats.find((c) => c.id === normalized.chatId);
+    normalized = await decryptMessageIfNeeded(normalized, chat, userId);
 
     if (!get().chats.some((c) => c.id === normalized.chatId)) {
-
       await get().ensureChatInList(normalized.chatId);
-
     }
 
     set((state) => {
-
       const chatMessages = state.messages[normalized.chatId] || [];
-
       const existingIdx = chatMessages.findIndex((m) => m.id === normalized.id);
-      const withoutMatchingPending = chatMessages.filter(
-        (m) =>
-          !(
-            m.id.startsWith('pending-') &&
-            m.isOwn &&
-            m.content === normalized.content &&
-            m.type === normalized.type
-          ),
-      );
+      const incomingClientId = getClientMessageId(normalized);
+      const withoutMatchingPending = chatMessages.filter((m) => {
+        if (!m.id.startsWith('pending-') || !m.isOwn) return true;
+        if (incomingClientId && getClientMessageId(m) === incomingClientId) return false;
+        if (m.id === normalized.id) return false;
+        return !(m.content === normalized.content && m.type === normalized.type);
+      });
 
       let nextMessages: Message[];
       if (existingIdx >= 0) {
-        nextMessages = withoutMatchingPending.map((m) =>
-          m.id === normalized.id
-            ? normalizeMessage(mergeMessage(m, normalized), userId)
-            : m,
+        nextMessages = sortMessagesByCreatedAt(
+          withoutMatchingPending.map((m) =>
+            m.id === normalized.id
+              ? normalizeMessage(mergeMessage(m, normalized), userId)
+              : m,
+          ),
         );
       } else {
-        nextMessages = [...withoutMatchingPending, normalized];
+        nextMessages = sortMessagesByCreatedAt([...withoutMatchingPending, normalized]);
       }
 
-
-
       const chats = state.chats.map((c) =>
-
         c.id === normalized.chatId
-
           ? {
-
               ...c,
-
               lastMessage: {
-
                 id: normalized.id,
-
                 content: normalized.content,
-
                 type: normalized.type,
-
                 createdAt: normalized.createdAt,
-
                 senderId: normalized.sender?.id || '',
-
                 status: normalized.status,
-
               },
-
               updatedAt: normalized.createdAt,
-
               unreadCount:
-
                 state.activeChatId === normalized.chatId
-
                   ? 0
-
                   : normalized.isOwn
-
                     ? c.unreadCount || 0
-
                     : (c.unreadCount || 0) + 1,
-
             }
-
           : c,
-
       );
-
-
 
       chats.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
-
-
       return {
-
-        chats,
-
+        chats: sortChats(chats),
         messages: {
-
           ...state.messages,
-
           [normalized.chatId]: nextMessages,
-
         },
-
       };
-
     });
 
-
-
     if (get().activeChatId === normalized.chatId) {
-
       get().markMessagesRead(normalized.chatId);
-
     }
 
+    if (
+      !normalized.isOwn &&
+      normalized.id &&
+      !normalized.id.startsWith('pending-')
+    ) {
+      socketService.acknowledgeDelivery(normalized.chatId, [normalized.id]);
+    }
   },
 
 
@@ -534,27 +594,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
 
   setTyping: (chatId, userId, displayName, isTyping = true) => {
+    const key = `${chatId}:${userId}`;
 
-    set((state) => {
+    if (isTyping) {
+      cancelTypingHide(key);
+      set((state) => {
+        const current = state.typingUsers[chatId] || [];
+        const filtered = current.filter((t) => t.userId !== userId);
+        return {
+          typingUsers: {
+            ...state.typingUsers,
+            [chatId]: [...filtered, { userId, displayName }],
+          },
+        };
+      });
+      return;
+    }
 
-      const current = state.typingUsers[chatId] || [];
-
-      const filtered = current.filter((t) => t.userId !== userId);
-
-      return {
-
-        typingUsers: {
-
-          ...state.typingUsers,
-
-          [chatId]: isTyping ? [...filtered, { userId, displayName }] : filtered,
-
-        },
-
-      };
-
+    scheduleTypingHide(key, () => {
+      set((state) => {
+        const current = state.typingUsers[chatId] || [];
+        return {
+          typingUsers: {
+            ...state.typingUsers,
+            [chatId]: current.filter((t) => t.userId !== userId),
+          },
+        };
+      });
     });
-
   },
 
 
@@ -608,27 +675,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
 
   markMessagesRead: (chatId) => {
+    const readReceiptsEnabled = useAuthStore.getState().user?.settings?.readReceipts !== false;
 
     set((state) => ({
-
       chats: state.chats.map((c) =>
-
         c.id === chatId ? { ...c, unreadCount: 0 } : c,
-
       ),
-
     }));
 
+    if (!readReceiptsEnabled) return;
+
     if (socketService.isConnected()) {
-
       socketService.markRead(chatId);
-
     } else {
-
       api.post('/messages/read', { chatId }).catch(() => {});
-
     }
-
   },
 
 
@@ -661,7 +722,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       chats.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
-      return { chats };
+      return { chats: sortChats(chats) };
 
     });
 
@@ -730,7 +791,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
   },
 
+  setScreenshotAlert: (chatId, alert) => {
+    set((state) => ({
+      screenshotAlerts: { ...state.screenshotAlerts, [chatId]: alert },
+    }));
+  },
 
+
+
+  onReconnect: async () => {
+    const { activeChatId, fetchMessages, fetchChats } = get();
+    await fetchChats();
+    if (activeChatId) {
+      socketService.joinChat(activeChatId);
+      await fetchMessages(activeChatId);
+    }
+    const queue = getOutboundQueue();
+    for (const item of queue) {
+      try {
+        await get().sendMessage(item.chatId, item.content, {
+          ...item.options,
+          metadata: {
+            ...item.options?.metadata,
+            _fromQueue: item.id,
+          },
+        });
+        dequeueOutbound(item.id);
+      } catch {
+        /* keep queued */
+      }
+    }
+  },
 
   initSocketListeners: () => {
 
@@ -749,8 +840,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       socketService.on('message:edit', (data) => {
 
         const userId = useAuthStore.getState().user?.id;
-
-        get().updateMessage(normalizeMessage(data as Message, userId));
+        const chat = get().chats.find((c) => c.id === (data as Message).chatId);
+        void decryptMessageIfNeeded(normalizeMessage(data as Message, userId), chat, userId).then(
+          (msg) => get().updateMessage(msg),
+        );
 
       }),
 
@@ -758,11 +851,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         const d = data as { messageId: string; chatId?: string; scope?: string };
 
-        if (d.scope === 'EVERYONE' && d.chatId) {
+        if (d.scope !== 'EVERYONE') return;
 
-          get().removeMessage(d.chatId, d.messageId);
-
+        let targetChatId = d.chatId;
+        if (!targetChatId) {
+          const state = get();
+          targetChatId = Object.keys(state.messages).find((cid) =>
+            state.messages[cid].some((m) => m.id === d.messageId),
+          );
         }
+        if (targetChatId) get().removeMessage(targetChatId, d.messageId);
+
+      }),
+
+      socketService.on('message:delivered', (data) => {
+
+        const d = data as { chatId: string; messageIds?: string[] };
+
+        if (!d.messageIds?.length) return;
+
+        set((state) => ({
+
+          messages: {
+
+            ...state.messages,
+
+            [d.chatId]: (state.messages[d.chatId] || []).map((m) =>
+
+              m.isOwn && d.messageIds!.includes(m.id) && m.status !== 'READ'
+
+                ? { ...m, status: 'DELIVERED' as const }
+
+                : m,
+
+            ),
+
+          },
+
+        }));
 
       }),
 
@@ -827,9 +953,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 );
 
               } else {
-
-                reactions.push({ emoji: d.emoji, userId: d.userId });
-
+                const exists = reactions.some(
+                  (r) => r.userId === d.userId && r.emoji === d.emoji,
+                );
+                if (!exists) {
+                  reactions.push({ emoji: d.emoji, userId: d.userId });
+                }
               }
 
               return { ...m, reactions };
@@ -876,6 +1005,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         get().setUserOnline(d.userId, d.online);
 
+      }),
+
+      socketService.on('user:screenshot', (data) => {
+        const d = data as {
+          chatId: string;
+          userId: string;
+          displayName?: string;
+          username?: string;
+          at: string;
+        };
+        const currentUserId = useAuthStore.getState().user?.id;
+        if (!d.chatId || d.userId === currentUserId) return;
+        get().setScreenshotAlert(d.chatId, {
+          id: `${d.userId}-${d.at}`,
+          displayName: d.displayName,
+          username: d.username,
+          at: d.at,
+        });
       }),
 
     ];

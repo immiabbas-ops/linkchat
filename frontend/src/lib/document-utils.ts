@@ -1,32 +1,14 @@
-/** Enhance a photo to look like a scanned document (grayscale + contrast). */
+import { applyEnhancement } from '@/lib/document-scan/enhancement';
+import { createCanvas, loadImage, canvasToBlob } from '@/lib/document-scan/image-io';
+
+/** Enhance a photo to look like a scanned document. */
 export async function enhanceDocumentImage(source: Blob | HTMLImageElement): Promise<Blob> {
-  const img =
-    source instanceof HTMLImageElement
-      ? source
-      : await loadImage(URL.createObjectURL(source));
-
-  const canvas = document.createElement('canvas');
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
-  const ctx = canvas.getContext('2d')!;
-  ctx.drawImage(img, 0, 0);
-
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const data = imageData.data;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    const contrast = 1.35;
-    const adjusted = Math.min(255, Math.max(0, (gray - 128) * contrast + 128));
-    const boosted = adjusted > 200 ? Math.min(255, adjusted + 15) : adjusted;
-    data[i] = boosted;
-    data[i + 1] = boosted;
-    data[i + 2] = boosted;
+  if (source instanceof HTMLImageElement) {
+    const [c, ctx] = createCanvas(source.naturalWidth, source.naturalHeight);
+    ctx.drawImage(source, 0, 0);
+    return applyEnhancement(c, 'auto');
   }
-
-  ctx.putImageData(imageData, 0, 0);
-
-  return canvasToBlob(canvas, 'image/jpeg', 0.92);
+  return applyEnhancement(source, 'auto');
 }
 
 /** Overlay a professional "SIGNED" stamp on a document image. */
@@ -35,11 +17,8 @@ export async function applySignedStamp(
   signerName: string,
   signedAt = new Date(),
 ): Promise<Blob> {
-  const img = await loadImage(URL.createObjectURL(source));
-  const canvas = document.createElement('canvas');
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
-  const ctx = canvas.getContext('2d')!;
+  const img = await loadImage(source);
+  const [canvas, ctx] = createCanvas(img.naturalWidth, img.naturalHeight);
   ctx.drawImage(img, 0, 0);
 
   const stampW = Math.min(canvas.width * 0.38, 280);
@@ -88,15 +67,12 @@ export async function combineDocumentPages(sources: Blob[]): Promise<Blob> {
   if (sources.length === 0) throw new Error('No pages');
   if (sources.length === 1) return sources[0];
 
-  const images = await Promise.all(sources.map((s) => loadImage(URL.createObjectURL(s))));
+  const images = await Promise.all(sources.map((s) => loadImage(s)));
   const width = Math.max(...images.map((img) => img.naturalWidth));
   const gap = 12;
   const height = images.reduce((sum, img) => sum + img.naturalHeight, 0) + gap * (images.length - 1);
 
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d')!;
+  const [canvas, ctx] = createCanvas(width, height);
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
 
@@ -108,21 +84,6 @@ export async function combineDocumentPages(sources: Blob[]): Promise<Blob> {
   }
 
   return canvasToBlob(canvas, 'image/jpeg', 0.92);
-}
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = src;
-  });
-}
-
-function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not export image'))), type, quality);
-  });
 }
 
 function roundRect(
@@ -145,3 +106,5 @@ function roundRect(
   ctx.quadraticCurveTo(x, y, x + r, y);
   ctx.closePath();
 }
+
+export { buildDocumentFilename } from '@/lib/document-scan/signatures';

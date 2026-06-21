@@ -1,11 +1,20 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { useRef, useState } from 'react';
-import { AlertCircle, Check, CheckCheck, FileText, MapPin, Reply, ScanLine, Stamp } from 'lucide-react';
+import { memo, useRef, useState } from 'react';
+import { AlertCircle, Check, CheckCheck, Clock, MapPin, Reply } from 'lucide-react';
 import { cn, formatMessageTime } from '@/lib/utils';
 import { isOwnMessage } from '@/lib/messages';
 import { extractUrls } from '@/lib/link-utils';
+import {
+  getMessageMediaFile,
+  isImageMedia,
+  isVideoMedia,
+} from '@/lib/message-media';
+import { truncateFileName } from '@/lib/media-ui';
+import { MediaImageCard } from './media/MediaImageCard';
+import { MediaVideoCard } from './media/MediaVideoCard';
+import { MediaDocumentCard } from './media/MediaDocumentCard';
 import { useAuthStore } from '@/store/auth-store';
 import { Avatar } from '@/components/ui/Avatar';
 import { VoiceMessagePlayer } from './VoiceMessagePlayer';
@@ -19,37 +28,75 @@ interface MessageBubbleProps {
   contactAvatar?: string;
   contactName?: string;
   showContactAvatar?: boolean;
+  groupedWithPrev?: boolean;
+  isGroup?: boolean;
   onLongPress: (message: Message) => void;
   onReply?: () => void;
+  onReplyJump?: (messageId: string) => void;
   onRetry?: () => void;
   onImageClick?: (url: string) => void;
   selectMode?: boolean;
   selected?: boolean;
 }
 
-function MessageStatus({ status, isOwn }: { status: string; isOwn?: boolean }) {
+function MessageStatus({
+  status,
+  isOwn,
+  onDark,
+  sending,
+}: {
+  status: string;
+  isOwn?: boolean;
+  onDark?: boolean;
+  sending?: boolean;
+}) {
+  if (sending) {
+    return (
+      <Clock
+        className={cn(
+          'h-[14px] w-[14px]',
+          onDark ? 'text-white/70' : isOwn ? 'text-[var(--bubble-out-meta)]' : 'text-[var(--text-secondary)]',
+        )}
+      />
+    );
+  }
   if (status === 'READ') {
-    return <CheckCheck className={cn('h-[14px] w-[14px]', isOwn ? 'text-cyan-300' : 'text-[var(--read-tick)]')} />;
+    return (
+      <CheckCheck
+        className={cn('h-[14px] w-[14px]', onDark ? 'text-cyan-300' : isOwn ? 'text-cyan-300' : 'text-[var(--read-tick)]')}
+      />
+    );
   }
   if (status === 'DELIVERED') {
     return (
       <CheckCheck
-        className={cn('h-[14px] w-[14px]', isOwn ? 'text-[var(--bubble-out-meta)]' : 'text-[var(--text-secondary)]')}
+        className={cn(
+          'h-[14px] w-[14px]',
+          onDark ? 'text-white/80' : isOwn ? 'text-[var(--bubble-out-meta)]' : 'text-[var(--text-secondary)]',
+        )}
       />
     );
   }
   return (
-    <Check className={cn('h-[14px] w-[14px]', isOwn ? 'text-[var(--bubble-out-meta)]' : 'text-[var(--text-secondary)]')} />
+    <Check
+      className={cn(
+        'h-[14px] w-[14px]',
+        onDark ? 'text-white/80' : isOwn ? 'text-[var(--bubble-out-meta)]' : 'text-[var(--text-secondary)]',
+      )}
+    />
   );
 }
 
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
   contactAvatar,
   contactName,
   showContactAvatar = false,
+  groupedWithPrev = false,
+  isGroup = false,
   onLongPress,
   onReply,
+  onReplyJump,
   onRetry,
   onImageClick,
   selectMode = false,
@@ -58,17 +105,46 @@ export function MessageBubble({
   const { user } = useAuthStore();
   const isOwn = isOwnMessage(message, user?.id);
   const voiceUrl = getVoiceMessageUrl(message);
-  const fileUrl = resolveMediaUrl(message.mediaFiles?.[0]?.url);
+  const mediaFile = getMessageMediaFile(message);
+  const fileUrl = mediaFile ? resolveMediaUrl(mediaFile.url) : '';
+  const fileName = mediaFile?.fileName || 'Document';
+
   const isVoice = message.type === 'VOICE' && !!voiceUrl;
+  const isVideoFile = !!mediaFile && isVideoMedia(mediaFile.mimeType, fileUrl, fileName);
+  const isVideo = (message.type === 'VIDEO' || isVideoFile) && !!mediaFile;
   const isDoc = message.type === 'DOCUMENT' || message.type === 'FILE';
+  const isImage = message.type === 'IMAGE' && !!mediaFile && !isVideoFile;
+  const isSending = message.sendState === 'sending';
+  const uploadProgress =
+    typeof message.metadata?.uploadProgress === 'number'
+      ? message.metadata.uploadProgress
+      : undefined;
   const isScanned = !!message.metadata?.scanned;
   const isSigned = !!message.metadata?.signed;
-  const docImageUrl = fileUrl;
-  const docIsImage =
-    isDoc &&
-    !!docImageUrl &&
-    (message.mediaFiles?.[0]?.mimeType?.startsWith('image/') ||
-      /\.(jpe?g|png|webp|gif)(\?|$)/i.test(docImageUrl));
+  const docIsImage = isDoc && !!mediaFile && isImageMedia(mediaFile.mimeType, fileUrl, fileName) && !isVideoFile;
+  const isMediaVisual = isImage || isVideo || docIsImage;
+  const isGenericFile =
+    !!mediaFile && !!fileUrl && !isVoice && !isImage && !isVideo && !docIsImage;
+
+  const senderAvatar = message.sender?.avatarUrl || contactAvatar;
+  const senderName = message.sender?.displayName || contactName;
+
+  const imageCaption =
+    isImage && message.content?.trim() && message.content.trim() !== fileName
+      ? message.content.trim()
+      : '';
+  const videoCaption =
+    isVideo && message.content?.trim() && message.content.trim() !== fileName
+      ? message.content.trim()
+      : '';
+  const docCaption =
+    (isDoc || isGenericFile) &&
+    !docIsImage &&
+    message.content?.trim() &&
+    message.content.trim() !== fileName
+      ? message.content.trim()
+      : '';
+
   const locationMeta = message.metadata as { lat?: number; lng?: number } | undefined;
   const hasLocation = message.type === 'LOCATION' && locationMeta?.lat != null && locationMeta?.lng != null;
   const urls = extractUrls(message.content);
@@ -105,29 +181,63 @@ export function MessageBubble({
     touchStartPos.current = null;
   };
 
-  const timeRow = (
+  const renderTimeRow = (onDark = false) => (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center gap-0.5 pb-0.5 text-[11px] leading-none',
-        isOwn ? 'text-[var(--bubble-out-meta)]' : 'text-[var(--bubble-in-meta)]',
+        'inline-flex shrink-0 items-center gap-0.5 text-[11px] leading-none',
+        onDark
+          ? 'text-white/90'
+          : isOwn
+            ? 'text-[var(--bubble-out-meta)]'
+            : 'text-[var(--bubble-in-meta)]',
       )}
     >
       {message.editedAt && <span>edited</span>}
       <span>{formatMessageTime(message.createdAt)}</span>
-      {isOwn && message.sendState !== 'failed' && <MessageStatus status={message.status} isOwn={isOwn} />}
+      {isOwn && message.sendState !== 'failed' && (
+        <MessageStatus status={message.status} isOwn={isOwn} onDark={onDark} sending={isSending} />
+      )}
       {isOwn && message.sendState === 'failed' && (
-        <button type="button" onClick={(e) => { e.stopPropagation(); onRetry?.(); }} className="text-red-300">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRetry?.();
+          }}
+          className={onDark ? 'text-red-200' : 'text-red-300'}
+        >
           <AlertCircle className="h-3.5 w-3.5" />
         </button>
       )}
     </span>
   );
 
+  const isPlainText =
+    !isVoice &&
+    !isImage &&
+    !isVideo &&
+    !docIsImage &&
+    !isDoc &&
+    !isGenericFile &&
+    !hasLocation;
+
+  const textContent = (() => {
+    const raw = message.content?.trim();
+    if (!raw) return '';
+    if (mediaFile && raw === fileName) return '';
+    if (mediaFile && raw === mediaFile.fileName) return '';
+    return raw;
+  })();
+
   return (
     <motion.div
-      initial={{ opacity: 0, y: 4 }}
+      initial={false}
       animate={{ opacity: 1, y: 0 }}
-      className={cn('relative mb-[2px] flex items-end gap-1 px-[6px]', isOwn ? 'justify-end' : 'justify-start')}
+      className={cn(
+        'relative flex items-end gap-1 px-[6px]',
+        groupedWithPrev ? 'mb-0' : 'mb-[2px]',
+        isOwn ? 'justify-end' : 'justify-start',
+      )}
     >
       {swipeX > 20 && (
         <Reply className="absolute left-2 top-1/2 h-5 w-5 -translate-y-1/2 text-[var(--accent)] opacity-70" />
@@ -135,14 +245,26 @@ export function MessageBubble({
       {!isOwn && (
         <div className="mb-1 w-7 shrink-0">
           {showContactAvatar ? (
-            <Avatar src={contactAvatar} name={contactName} size="sm" className="h-7 w-7 [&_img]:h-7 [&_img]:w-7 [&>div]:h-7 [&>div]:w-7 [&>div]:text-[10px]" />
+            <Avatar
+              src={senderAvatar}
+              name={senderName}
+              size="sm"
+              className="h-7 w-7 [&_img]:h-7 [&_img]:w-7 [&>div]:h-7 [&>div]:w-7 [&>div]:text-[10px]"
+            />
           ) : null}
         </div>
       )}
 
+      <div className="min-w-0 max-w-[82%]">
+        {isGroup && !isOwn && showContactAvatar && senderName && (
+          <p className="mb-0.5 px-1 text-[12px] font-medium text-[var(--accent-dark)]">{senderName}</p>
+        )}
       <div
         style={{ transform: `translateX(${swipeX}px)` }}
-        onContextMenu={(e) => { e.preventDefault(); onLongPress(message); }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onLongPress(message);
+        }}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -150,7 +272,13 @@ export function MessageBubble({
         onClick={() => selectMode && onLongPress(message)}
         className={cn(
           'relative max-w-[82%] cursor-pointer select-none shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] transition-transform',
-          isVoice ? 'rounded-lg px-1.5 py-1' : 'px-2 py-1.5',
+          isVoice
+            ? 'rounded-lg px-1.5 py-1'
+            : isMediaVisual
+              ? 'overflow-hidden p-1'
+              : isDoc || isGenericFile
+                ? 'min-w-[240px] px-2 py-1.5'
+                : 'px-2 py-1.5',
           isOwn ? 'wa-bubble-out' : 'wa-bubble-in',
           message.reactions?.length ? 'mb-3' : '',
           selected ? 'ring-2 ring-[var(--accent)]' : '',
@@ -160,7 +288,11 @@ export function MessageBubble({
         {message.replyTo && (
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onReply?.(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (message.replyTo?.id && onReplyJump) onReplyJump(message.replyTo.id);
+              else onReply?.();
+            }}
             className={cn(
               'mb-1 w-full rounded border-l-4 px-2 py-1 text-left text-xs',
               isOwn
@@ -182,69 +314,54 @@ export function MessageBubble({
             createdAt={message.createdAt}
             status={<MessageStatus status={message.status} isOwn={isOwn} />}
           />
-        ) : message.type === 'IMAGE' && message.mediaFiles?.[0] ? (
-          <div>
-            <button type="button" onClick={() => onImageClick?.(fileUrl)} className="block">
-              <img src={fileUrl} alt="Shared" className="max-h-64 rounded-md object-cover" />
-            </button>
-            {message.content && message.content !== message.mediaFiles[0].fileName && (
-              <p className="mt-1 whitespace-pre-wrap text-[14px]">{message.content}</p>
-            )}
-            <div className="mt-0.5 flex items-end justify-end gap-1">{timeRow}</div>
-          </div>
-        ) : isDoc && docIsImage ? (
-          <div>
-            <button
-              type="button"
-              onClick={() => onImageClick?.(docImageUrl!)}
-              className="relative block"
-            >
-              <img src={docImageUrl} alt="Document" className="max-h-64 rounded-md object-cover" />
-              {(isScanned || isSigned) && (
-                <div className="absolute left-2 top-2 flex flex-wrap gap-1">
-                  {isScanned && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-medium text-white">
-                      <ScanLine className="h-3 w-3" />
-                      Scanned
-                    </span>
-                  )}
-                  {isSigned && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-[#1d4ed8]/90 px-2 py-0.5 text-[10px] font-medium text-white">
-                      <Stamp className="h-3 w-3" />
-                      Signed
-                    </span>
-                  )}
-                </div>
-              )}
-            </button>
-            <p className="mt-1 truncate text-[12px] opacity-80">
-              {message.mediaFiles?.[0]?.fileName || message.content || 'Document'}
-            </p>
-            <div className="mt-0.5 flex items-end justify-end gap-1">{timeRow}</div>
-          </div>
-        ) : isDoc ? (
-          <a
-            href={fileUrl || '#'}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="flex items-center gap-2"
-          >
-            <FileText className="h-8 w-8 shrink-0 opacity-80" />
-            <div className="min-w-0">
-              <p className="truncate text-[14px] font-medium">{message.mediaFiles?.[0]?.fileName || message.content}</p>
-              <p className="flex items-center gap-1 text-[11px] opacity-70">
-                Document
-                {isSigned && (
-                  <>
-                    <span>·</span>
-                    <Stamp className="h-3 w-3" />
-                    Signed
-                  </>
-                )}
-              </p>
-            </div>
-          </a>
+        ) : isImage ? (
+          <MediaImageCard
+            src={fileUrl}
+            alt={truncateFileName(fileName, 20)}
+            caption={imageCaption}
+            sending={isSending}
+            uploadProgress={uploadProgress}
+            isScanned={isScanned}
+            isSigned={isSigned}
+            onClick={() => onImageClick?.(fileUrl)}
+            timeOverlay={!imageCaption ? renderTimeRow(true) : undefined}
+            footerTime={imageCaption ? renderTimeRow() : undefined}
+          />
+        ) : isVideo ? (
+          <MediaVideoCard
+            src={fileUrl}
+            fileName={fileName}
+            caption={videoCaption}
+            sending={isSending}
+            uploadProgress={uploadProgress}
+            timeOverlay={!videoCaption ? renderTimeRow(true) : undefined}
+            footerTime={videoCaption ? renderTimeRow() : undefined}
+          />
+        ) : docIsImage ? (
+          <MediaImageCard
+            src={fileUrl}
+            alt={truncateFileName(fileName, 20)}
+            caption={docCaption}
+            sending={isSending}
+            uploadProgress={uploadProgress}
+            isScanned={isScanned}
+            isSigned={isSigned}
+            onClick={() => onImageClick?.(fileUrl)}
+            showTruncatedName={!docCaption}
+            truncatedName={truncateFileName(fileName, 28)}
+            footerTime={renderTimeRow()}
+          />
+        ) : isDoc || isGenericFile ? (
+          <MediaDocumentCard
+            fileUrl={fileUrl}
+            fileName={fileName}
+            fileSize={mediaFile?.fileSize}
+            caption={docCaption}
+            sending={isSending}
+            uploadProgress={uploadProgress}
+            isSigned={isSigned}
+            footerTime={renderTimeRow()}
+          />
         ) : hasLocation ? (
           <a
             href={`https://www.google.com/maps?q=${locationMeta!.lat},${locationMeta!.lng}`}
@@ -262,30 +379,20 @@ export function MessageBubble({
                 <p className="text-[11px] opacity-70">Tap to open in Maps</p>
               </div>
             </div>
-            <div className="mt-0.5 flex items-end justify-end gap-1">{timeRow}</div>
+            <div className="mt-0.5 flex items-end justify-end">{renderTimeRow()}</div>
           </a>
-        ) : (
+        ) : isPlainText ? (
           <div className="flex flex-wrap items-end gap-x-1.5 gap-y-0.5 text-[14.2px] leading-[19px]">
             <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-              {message.content?.trim() || '\u00A0'}
+              {textContent || '\u00A0'}
             </span>
-            {timeRow}
+            {renderTimeRow()}
           </div>
-        )}
+        ) : null}
 
-        {urls.map((url) => (
+        {isPlainText && urls.map((url) => (
           <LinkPreview key={url} url={url} isOwn={isOwn} />
         ))}
-
-        {message.sendState === 'failed' && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onRetry?.(); }}
-            className="mt-1 text-[11px] text-red-300 underline"
-          >
-            Tap to retry
-          </button>
-        )}
 
         {message.reactions && message.reactions.length > 0 && (
           <div
@@ -295,11 +402,14 @@ export function MessageBubble({
             )}
           >
             {Array.from(new Set(message.reactions.map((r) => r.emoji))).map((emoji) => (
-              <span key={emoji} className="text-[13px] leading-none">{emoji}</span>
+              <span key={emoji} className="text-[13px] leading-none">
+                {emoji}
+              </span>
             ))}
           </div>
         )}
       </div>
+      </div>
     </motion.div>
   );
-}
+});

@@ -4,7 +4,7 @@ import {
   ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
-import { MessageStatus, MessageType } from '@prisma/client';
+import { MessageStatus, MessageType, ChatType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import {
@@ -55,6 +55,14 @@ export class MessagesService {
 
   async sendMessage(userId: string, dto: SendMessageDto) {
     await this.ensureMember(dto.chatId, userId);
+    await this.ensureNotBlocked(dto.chatId, userId);
+
+    if (dto.mediaFileId) {
+      const media = await this.prisma.mediaFile.findFirst({
+        where: { id: dto.mediaFileId, uploaderId: userId },
+      });
+      if (!media) throw new ForbiddenException('Invalid media file');
+    }
 
     const message = await this.prisma.message.create({
       data: {
@@ -76,6 +84,13 @@ export class MessagesService {
       where: { id: dto.chatId },
       data: { updatedAt: new Date() },
     });
+
+    if (dto.mediaFileId) {
+      await this.prisma.mediaFile.updateMany({
+        where: { id: dto.mediaFileId, messageId: null },
+        data: { messageId: message.id },
+      });
+    }
 
     return this.formatMessage(message, userId);
   }
@@ -190,12 +205,22 @@ export class MessagesService {
   async markAsRead(chatId: string, userId: string, messageId?: string) {
     await this.ensureMember(chatId, userId);
 
+    let readThrough: Date | undefined;
+    if (messageId) {
+      const anchor = await this.prisma.message.findFirst({
+        where: { id: messageId, chatId },
+        select: { createdAt: true },
+      });
+      if (!anchor) throw new NotFoundException('Message not found');
+      readThrough = anchor.createdAt;
+    }
+
     const unreadMessages = await this.prisma.message.findMany({
       where: {
         chatId,
         senderId: { not: userId },
         NOT: { reads: { some: { userId } } },
-        ...(messageId ? { id: { lte: messageId } } : {}),
+        ...(readThrough ? { createdAt: { lte: readThrough } } : {}),
       },
       select: { id: true },
     });
@@ -207,12 +232,46 @@ export class MessagesService {
       skipDuplicates: true,
     });
 
-    await this.prisma.message.updateMany({
-      where: { id: { in: unreadMessages.map((m) => m.id) } },
-      data: { status: MessageStatus.READ },
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: { type: true },
     });
 
+    if (chat?.type === ChatType.PRIVATE) {
+      await this.prisma.message.updateMany({
+        where: { id: { in: unreadMessages.map((m) => m.id) } },
+        data: { status: MessageStatus.READ },
+      });
+    }
+
     return { read: unreadMessages.length, messageIds: unreadMessages.map((m) => m.id) };
+  }
+
+  async markAsDelivered(chatId: string, userId: string, messageIds: string[]) {
+    if (!messageIds.length) return { delivered: 0 };
+
+    await this.ensureMember(chatId, userId);
+
+    const eligible = await this.prisma.message.findMany({
+      where: {
+        id: { in: messageIds },
+        chatId,
+        senderId: { not: userId },
+        status: MessageStatus.SENT,
+      },
+      select: { id: true },
+    });
+
+    if (eligible.length === 0) return { delivered: 0, messageIds: [] };
+
+    const ids = eligible.map((m) => m.id);
+
+    await this.prisma.message.updateMany({
+      where: { id: { in: ids } },
+      data: { status: MessageStatus.DELIVERED },
+    });
+
+    return { delivered: ids.length, messageIds: ids };
   }
 
   async searchMessages(userId: string, query: string, chatId?: string) {
@@ -221,7 +280,14 @@ export class MessagesService {
       select: { chatId: true },
     });
 
-    const chatIds = chatId ? [chatId] : memberChats.map((m) => m.chatId);
+    const memberChatIds = new Set(memberChats.map((m) => m.chatId));
+    const chatIds = chatId
+      ? memberChatIds.has(chatId)
+        ? [chatId]
+        : []
+      : memberChats.map((m) => m.chatId);
+
+    if (chatIds.length === 0) return [];
 
     const messages = await this.prisma.message.findMany({
       where: {
@@ -307,6 +373,27 @@ export class MessagesService {
       mediaFiles: true,
       starredBy: true,
     };
+  }
+
+  private async ensureNotBlocked(chatId: string, userId: string) {
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      include: { members: { where: { leftAt: null } } },
+    });
+    if (!chat || chat.type !== ChatType.PRIVATE) return;
+
+    const other = chat.members.find((m) => m.userId !== userId);
+    if (!other) return;
+
+    const blocked = await this.prisma.blockedUser.findFirst({
+      where: {
+        OR: [
+          { userId, blockedUserId: other.userId },
+          { userId: other.userId, blockedUserId: userId },
+        ],
+      },
+    });
+    if (blocked) throw new ForbiddenException('Cannot message this user');
   }
 
   private async ensureMember(chatId: string, userId: string) {
