@@ -54,14 +54,17 @@ export class AuthService {
     };
   }
 
-  private allowDevOtpBypass(code: string): boolean {
-    return this.config.get('NODE_ENV') !== 'production' && code === '0000';
+  private isDemoOtpAccepted(code: string): boolean {
+    const demoCode = this.config.get('OTP_DEMO_CODE', '0000');
+    if (code !== demoCode) return false;
+    if (this.config.get('NODE_ENV') !== 'production') return true;
+    return this.config.get('ALLOW_DEMO_OTP', 'false') === 'true';
   }
 
   async verifyOtp(dto: VerifyOtpDto) {
     const email = dto.email.toLowerCase();
 
-    if (!this.allowDevOtpBypass(dto.code)) {
+    if (!this.isDemoOtpAccepted(dto.code)) {
       const otp = await this.prisma.otpCode.findFirst({
         where: {
           email,
@@ -147,7 +150,7 @@ export class AuthService {
       throw new BadRequestException('Enter a valid mobile number');
     }
 
-    if (!this.allowDevOtpBypass(dto.code)) {
+    if (!this.isDemoOtpAccepted(dto.code)) {
       throw new BadRequestException('Invalid or expired OTP');
     }
 
@@ -165,7 +168,7 @@ export class AuthService {
       throw new BadRequestException('Enter a valid mobile number');
     }
 
-    if (!this.allowDevOtpBypass(dto.code)) {
+    if (!this.isDemoOtpAccepted(dto.code)) {
       throw new BadRequestException('Invalid or expired OTP');
     }
 
