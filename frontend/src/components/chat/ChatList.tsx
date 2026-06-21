@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Search, MessageSquarePlus, Pin, X, MoreVertical, Archive, Lock, Users } from 'lucide-react';
 import Link from 'next/link';
@@ -16,6 +16,7 @@ import { useAuthStore } from '@/store/auth-store';
 import { useConnectorStore } from '@/store/connector-store';
 import { LinkedConnectorRow } from '@/components/chat/LinkedConnectorRow';
 import { NewGroupSheet, type NewGroupPayload } from '@/components/chat/NewGroupSheet';
+import { ChatListActionMenu } from '@/components/chat/ChatListActionMenu';
 import { setupChatKeys, distributeChatKeys } from '@/lib/e2ee';
 import { isE2eePayload } from '@/lib/e2ee';
 import { NewSmsButton } from '@/components/sim/NewSmsButton';
@@ -29,12 +30,18 @@ function ChatListItem({
   typing,
   recording,
   currentUserId,
+  onLongPress,
 }: {
   chat: Chat;
   typing: { userId: string; displayName?: string }[];
   recording: { userId: string; displayName?: string }[];
   currentUserId?: string;
+  onLongPress: (chat: Chat) => void;
 }) {
+  const router = useRouter();
+  const longPressTimer = useRef<ReturnType<typeof setTimeout>>();
+  const longPressTriggered = useRef(false);
+  const touchStartPos = useRef<{ x: number; y: number } | null>(null);
   const presence = getPresenceLabel(typing, recording, currentUserId);
   const unread = chat.unreadCount || 0;
 
@@ -54,12 +61,69 @@ function ChatListItem({
               ? '🔒 Message'
               : chat.lastMessage?.content || 'No messages yet';
 
+  const openMenu = useCallback(() => {
+    longPressTriggered.current = true;
+    if (navigator.vibrate) navigator.vibrate(10);
+    onLongPress(chat);
+  }, [chat, onLongPress]);
+
+  const clearLongPress = () => {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    longPressTimer.current = undefined;
+  };
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    touchStartPos.current = { x: touch.clientX, y: touch.clientY };
+    longPressTriggered.current = false;
+    longPressTimer.current = setTimeout(openMenu, 450);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!touchStartPos.current) return;
+    const touch = e.touches[0];
+    const dx = Math.abs(touch.clientX - touchStartPos.current.x);
+    const dy = Math.abs(touch.clientY - touchStartPos.current.y);
+    if (dx > 10 || dy > 10) clearLongPress();
+  };
+
+  const handleTouchEnd = () => {
+    clearLongPress();
+    touchStartPos.current = null;
+  };
+
+  const handleClick = () => {
+    if (longPressTriggered.current) {
+      longPressTriggered.current = false;
+      return;
+    }
+    router.push(`/chats/${chat.id}`);
+  };
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    openMenu();
+  };
+
   return (
-    <Link href={`/chats/${chat.id}`}>
-      <motion.div
-        whileTap={{ backgroundColor: 'rgba(0,0,0,0.04)' }}
-        className="flex items-center gap-3 px-4 py-3"
-      >
+    <motion.div
+      role="button"
+      tabIndex={0}
+      whileTap={{ backgroundColor: 'rgba(0,0,0,0.04)' }}
+      className="flex cursor-pointer items-center gap-3 px-4 py-3"
+      onClick={handleClick}
+      onContextMenu={handleContextMenu}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchEnd}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          handleClick();
+        }
+      }}
+    >
         <Avatar src={chat.avatarUrl} name={chat.title} online={chat.isOnline} size="lg" />
         <div className="flex min-w-0 flex-1 flex-col justify-center">
           <div className="flex items-start justify-between gap-2">
@@ -124,7 +188,6 @@ function ChatListItem({
           </p>
         </div>
       </motion.div>
-    </Link>
   );
 }
 
@@ -141,7 +204,7 @@ const menuItems = [
 export function ChatList({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
   const { user } = useAuthStore();
-  const { chats, fetchChats, isLoadingChats, typingUsers, recordingUsers, upsertChat } = useChatStore();
+  const { chats, fetchChats, isLoadingChats, typingUsers, recordingUsers, upsertChat, updateChatMeta, markMessagesRead, removeChatFromList } = useChatStore();
   const { connectors, fetchConnectors } = useConnectorStore();
   const { activated: simActive, fetchStatus: fetchSimStatus } = useSimStore();
   const [search, setSearch] = useState('');
@@ -150,6 +213,7 @@ export function ChatList({ embedded = false }: { embedded?: boolean }) {
   const [showMenu, setShowMenu] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [filterUnread, setFilterUnread] = useState(false);
+  const [actionChat, setActionChat] = useState<Chat | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -197,6 +261,56 @@ export function ChatList({ embedded = false }: { embedded?: boolean }) {
     setShowMenu(false);
     if (action === 'new-chat') setShowNewChat(true);
     if (action === 'new-group') setShowNewGroup(true);
+  };
+
+  const handleChatListAction = async (action: string, chat: Chat) => {
+    setActionChat(null);
+    try {
+      switch (action) {
+        case 'pin':
+          if (chat.isPinned) await api.post(`/chats/${chat.id}/unpin`);
+          else await api.post(`/chats/${chat.id}/pin`);
+          updateChatMeta(chat.id, { isPinned: !chat.isPinned });
+          await fetchChats();
+          break;
+        case 'mute':
+          if (chat.isMuted) await api.post(`/chats/${chat.id}/unmute`);
+          else await api.post(`/chats/${chat.id}/mute`);
+          updateChatMeta(chat.id, { isMuted: !chat.isMuted });
+          break;
+        case 'archive':
+          if (chat.isArchived) {
+            await api.post(`/chats/${chat.id}/unarchive`);
+            updateChatMeta(chat.id, { isArchived: false });
+          } else {
+            await api.post(`/chats/${chat.id}/archive`);
+            updateChatMeta(chat.id, { isArchived: true });
+          }
+          await fetchChats();
+          break;
+        case 'mark-read':
+          markMessagesRead(chat.id);
+          break;
+        case 'delete':
+          if (window.confirm(`Delete chat with ${getChatDisplayTitle(chat)}? It will be archived.`)) {
+            await api.post(`/chats/${chat.id}/archive`);
+            updateChatMeta(chat.id, { isArchived: true });
+            await fetchChats();
+          }
+          break;
+        case 'leave-group':
+          if (window.confirm('Leave this group?')) {
+            await api.post(`/chats/${chat.id}/leave`);
+            removeChatFromList(chat.id);
+          }
+          break;
+        default:
+          break;
+      }
+    } catch (err) {
+      console.error('Chat action failed', err);
+      alert('Could not complete that action. Try again.');
+    }
   };
 
   const createGroup = async (payload: NewGroupPayload) => {
@@ -369,6 +483,7 @@ export function ChatList({ embedded = false }: { embedded?: boolean }) {
                 typing={typingUsers[chat.id] || []}
                 recording={recordingUsers[chat.id] || []}
                 currentUserId={user?.id}
+                onLongPress={setActionChat}
               />
             ))}
             {archivedChats.length > 0 && (
@@ -389,6 +504,7 @@ export function ChatList({ embedded = false }: { embedded?: boolean }) {
                         typing={typingUsers[chat.id] || []}
                         recording={recordingUsers[chat.id] || []}
                         currentUserId={user?.id}
+                        onLongPress={setActionChat}
                       />
                       <button
                         type="button"
@@ -412,6 +528,13 @@ export function ChatList({ embedded = false }: { embedded?: boolean }) {
       />
 
       <NewGroupSheet open={showNewGroup} onClose={() => setShowNewGroup(false)} onCreate={createGroup} />
+
+      <ChatListActionMenu
+        chat={actionChat}
+        open={!!actionChat}
+        onClose={() => setActionChat(null)}
+        onAction={(action, chat) => void handleChatListAction(action, chat)}
+      />
     </div>
   );
 }
