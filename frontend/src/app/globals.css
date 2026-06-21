@@ -83,6 +83,16 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Native select popups are light on most OSes — avoid light-on-white options in dark theme */
+select {
+  color: var(--text-primary);
+}
+
+select option {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
 @layer utilities {
   .glass {
     background: var(--bg-glass);

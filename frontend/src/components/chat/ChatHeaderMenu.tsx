@@ -59,6 +59,7 @@ export function ChatHeaderMenu({
   const [mounted, setMounted] = useState(false);
   const [menuPos, setMenuPos] = useState({ top: 0, right: 0 });
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   const isGroup = chat?.type === 'GROUP';
@@ -95,7 +96,9 @@ export function ChatHeaderMenu({
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', onPointerDown);
     return () => document.removeEventListener('mousedown', onPointerDown);
@@ -157,6 +160,7 @@ export function ChatHeaderMenu({
         open &&
         createPortal(
           <div
+            ref={menuRef}
             role="menu"
             style={{ top: menuPos.top, right: menuPos.right }}
             className="chat-header-menu fixed z-[250] max-h-[70vh] min-w-[220px] overflow-y-auto rounded-xl border border-[var(--border-glass)] py-2 shadow-xl"

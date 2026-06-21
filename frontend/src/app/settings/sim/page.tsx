@@ -209,7 +209,7 @@ export default function SimActivationPage() {
                 <select
                   value={carrier}
                   onChange={(e) => setCarrier(e.target.value)}
-                  className="mt-2 w-full rounded-xl border border-[var(--border-glass)] bg-[var(--search-bg)] px-4 py-3 focus:outline-none"
+                  className="mt-2 w-full rounded-xl border border-[var(--border-glass)] bg-[var(--search-bg)] px-4 py-3 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
                 >
                   <option value="">Select carrier</option>
                   {CARRIERS.map((c) => (
